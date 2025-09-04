@@ -1,16 +1,22 @@
 // lib/socket.ts
-import io from "socket.io-client";
+import io, { Socket } from "socket.io-client";
 
-// Avoid importing the Socket type; infer from io()
 let socket: ReturnType<typeof io> | null = null;
 
-export function getSocket() {
+export function getSocket(): ReturnType<typeof io> {
   if (!socket) {
-    // Use same-origin by default; works locally & in prod
-    socket = io({
+    const url =
+      process.env.NEXT_PUBLIC_WS_URL ||
+      (typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
+
+    socket = io(url, {
       path: "/socket.io",
-      transports: ["websocket"], // or ["polling"] if you prefer
+      transports: ["websocket"],
+      autoConnect: false,
     });
+
+  socket.on("connect_error", (e: Error) => console.error("[socket] connect_error:", e?.message));
   }
   return socket;
 }
+
