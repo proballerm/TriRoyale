@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import io, { Socket } from "socket.io-client";
+import io from "socket.io-client"; // ✅ no Socket import
 
 interface LeaderboardEntry {
   username: string;
@@ -25,7 +25,8 @@ export default function LeaderboardPage() {
   const [selectedCategory, setSelectedCategory] = useState("Total Wins");
 
   useEffect(() => {
-    const socket: Socket = io({
+    // ✅ robust typing without importing Socket
+    const socket: ReturnType<typeof io> = io({
       path: "/socket.io",
       transports: ["websocket"],
     });

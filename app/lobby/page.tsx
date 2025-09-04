@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { getSocket } from "@/lib/socket";
 import { useSession, SessionProvider } from "next-auth/react";
 import { v4 as uuidv4 } from "uuid";
+import { Suspense } from "react";
 
 type LobbyUpdate = {
   category: string;
@@ -17,6 +18,8 @@ type GameStatusPayload = {
   started: boolean;
   matchId: string;
 };
+
+export const dynamic = "force-dynamic";
 
 function LobbyPage() {
   const { data: session, status } = useSession();
@@ -139,7 +142,15 @@ function LobbyPage() {
 export default function LobbyPageWrapper() {
   return (
     <SessionProvider>
-      <LobbyPage />
+      <Suspense
+        fallback={
+          <main className="min-h-screen flex items-center justify-center">
+            <p>Loading…</p>
+          </main>
+        }
+      >
+        <LobbyPage />
+      </Suspense>
     </SessionProvider>
   );
 }

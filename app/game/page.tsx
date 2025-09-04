@@ -1,5 +1,5 @@
 "use client";
-
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useState, useRef } from "react";
 import { getSocket } from "@/lib/socket";
@@ -26,7 +26,7 @@ type RoundResultPayload = {
   survivors: string[];
 };
 
-export function InnerGamePage() {
+function InnerGamePage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -47,6 +47,8 @@ export function InnerGamePage() {
   useEffect(() => {
     if (status !== "authenticated" || !session?.user?.name || !matchId) return;
 
+    const username = session.user.name; // capture once
+
     const socket = getSocket();
 
     const handleConnect = () => {
@@ -60,7 +62,7 @@ export function InnerGamePage() {
       if (payload.started && payload.question) {
         loadQuestion(payload.question);
       }
-      if (payload.eliminated?.includes(session.user.name)) {
+      if (payload.eliminated?.includes(username)) {
         setEliminated(true);
       }
     });
@@ -78,8 +80,9 @@ export function InnerGamePage() {
       }
     });
 
-    socket.on("eliminated", ({ username }) => {
-      if (username === session.user.name) {
+    // ⬇️ explicit type for the destructured param
+    socket.on("eliminated", ({ username: elimUser }: { username: string }) => {
+      if (elimUser === username) {
         setEliminated(true);
       }
     });
@@ -92,7 +95,7 @@ export function InnerGamePage() {
       );
     });
 
-    socket.on("playersRemaining", ({ count }) => {
+    socket.on("playersRemaining", ({ count }: { count: number }) => {
       setPlayersRemaining(count);
       setGamePhase("intermission");
     });
@@ -170,7 +173,7 @@ export function InnerGamePage() {
     if (timerRef.current) {
       clearInterval(timerRef.current);  // ✅ Stop the timeout emit
       timerRef.current = null;
-  }
+    }
 
     console.log(`[Answer Submitted] ${session.user.name} → ${answer}, timeLeft=${timeLeft}`);
 
@@ -286,10 +289,20 @@ export function InnerGamePage() {
   );
 }
 
+export const dynamic = "force-dynamic";
+
 export default function GamePage() {
   return (
     <SessionProvider>
-      <InnerGamePage />
+      <Suspense
+        fallback={
+          <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE]">
+            <p className="text-white text-xl font-bold">Loading…</p>
+          </main>
+        }
+      >
+        <InnerGamePage />
+      </Suspense>
     </SessionProvider>
   );
 }

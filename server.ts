@@ -209,7 +209,8 @@ nextApp.prepare().then(() => {
 
   app.all("*", (req, res) => handle(req, res));
 
-  httpServer.listen(3000, () => {
-    console.log("\u{1F680} Server ready on http://localhost:3000");
+  const PORT = Number(process.env.PORT) || 3000;
+    httpServer.listen(PORT, () => {
+    console.log(`🚀 Server ready on http://localhost:${PORT}`);
   });
 });
