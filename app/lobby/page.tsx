@@ -1,30 +1,33 @@
+// app/lobby/page.tsx
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import { getSocket } from "@/lib/socket";
 import { useSession, SessionProvider } from "next-auth/react";
 import { v4 as uuidv4 } from "uuid";
-import { Suspense } from "react";
 
 type LobbyUpdate = {
-  category: string;
-  players: string[];
   matchId: string;
+  players: string[];
+  category?: string;
+  host?: string;
 };
 
 type GameStatusPayload = {
-  category: string;
-  started: boolean;
   matchId: string;
+  category?: string;
+  started: boolean;
+  question?: any;
 };
 
 export const dynamic = "force-dynamic";
 
-function LobbyPage() {
+function LobbyPageInner() {
   const { data: session, status } = useSession();
   const searchParams = useSearchParams();
   const router = useRouter();
+
   const category = searchParams.get("category") || "Battle Royale";
   const incomingMatchId = searchParams.get("matchId");
 
@@ -32,57 +35,84 @@ function LobbyPage() {
   const [gameStarted, setGameStarted] = useState(false);
   const [matchId, setMatchId] = useState<string>("");
 
+  // Stable username fallback so joinLobby never no-ops
+  const username = useMemo(() => {
+    return (
+      session?.user?.name ||
+      session?.user?.email?.split("@")[0] ||
+      `Player_${Math.random().toString(36).slice(2, 6)}`
+    );
+  }, [session?.user?.name, session?.user?.email]);
+
+  // Stable matchId for this lobby view
+  const generatedMatchId = useMemo(
+    () => incomingMatchId || uuidv4(),
+    [incomingMatchId]
+  );
+
   useEffect(() => {
-    if (status !== "authenticated" || !session?.user?.name) return;
+    if (status !== "authenticated") return;
 
     const socket = getSocket();
-
-    const generatedMatchId = incomingMatchId || uuidv4();
     setMatchId(generatedMatchId);
 
     const handleGameStatus = (payload: GameStatusPayload) => {
       if (payload.matchId !== generatedMatchId) return;
       if (payload.started && !gameStarted) {
         setGameStarted(true);
-        router.push(`/game?category=${encodeURIComponent(category)}&matchId=${generatedMatchId}`);
+        router.push(
+          `/game?category=${encodeURIComponent(category)}&matchId=${generatedMatchId}`
+        );
       }
     };
 
     const handleLobbyUpdate = (data: LobbyUpdate) => {
-      if (data.category === category && data.matchId === generatedMatchId) {
+      // Key the lobby strictly by matchId (server includes category too, but it's not required)
+      if (data.matchId === generatedMatchId) {
         setPlayers(data.players);
       }
     };
 
-    const handleStartGame = (data: { category: string; matchId: string }) => {
-      if (data.category === category && data.matchId === generatedMatchId && !gameStarted) {
+    const onStartGameEvent = (data: { category: string; matchId: string }) => {
+      if (data.matchId === generatedMatchId && !gameStarted) {
         setGameStarted(true);
-        router.push(`/game?category=${encodeURIComponent(category)}&matchId=${generatedMatchId}`);
+        router.push(
+          `/game?category=${encodeURIComponent(category)}&matchId=${generatedMatchId}`
+        );
       }
     };
 
     socket.on("gameStatus", handleGameStatus);
     socket.on("lobbyUpdate", handleLobbyUpdate);
-    socket.on("startGame", handleStartGame);
+    socket.on("startGame", onStartGameEvent);
 
     if (!socket.connected) socket.connect();
 
-    socket.emit("joinLobby", {
-      username: session.user?.name,
-      category,
-      matchId: generatedMatchId,
-    });
-
-    socket.emit("checkGameStatus", { category, matchId: generatedMatchId });
+    // Ensure we emit after the socket is actually connected
+    const onConnect = () => {
+      socket.emit("joinLobby", {
+        username,
+        category,
+        matchId: generatedMatchId,
+      });
+      socket.emit("checkGameStatus", {
+        category,
+        matchId: generatedMatchId,
+      });
+    };
+    socket.once("connect", onConnect);
 
     return () => {
       socket.off("gameStatus", handleGameStatus);
       socket.off("lobbyUpdate", handleLobbyUpdate);
-      socket.off("startGame", handleStartGame);
+      socket.off("startGame", onStartGameEvent);
+      socket.off("connect", onConnect);
+      // (We keep the socket connected across pages so the game screen reuses it.)
     };
-  }, [status, session, category, router, gameStarted, incomingMatchId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, username, category, generatedMatchId, router, gameStarted]);
 
-  const handleStartGame = () => {
+  const handleStartGameClick = () => {
     const socket = getSocket();
     if (!matchId) return;
     socket.emit("startGame", { category, matchId });
@@ -118,7 +148,7 @@ function LobbyPage() {
             <div
               key={i}
               className={`px-4 py-2 rounded ${
-                p === session?.user?.name
+                p === username
                   ? "bg-[#FFD930] text-[#003E7E] font-bold"
                   : "bg-white/20 text-white"
               }`}
@@ -129,7 +159,7 @@ function LobbyPage() {
         </div>
 
         <button
-          onClick={handleStartGame}
+          onClick={handleStartGameClick}
           className="w-full py-3 rounded-lg bg-[#FFD930] hover:bg-[#FFC500] text-[#003E7E] text-lg font-extrabold uppercase shadow transition"
         >
           Start Game
@@ -139,7 +169,7 @@ function LobbyPage() {
   );
 }
 
-export default function LobbyPageWrapper() {
+export default function LobbyPage() {
   return (
     <SessionProvider>
       <Suspense
@@ -149,7 +179,7 @@ export default function LobbyPageWrapper() {
           </main>
         }
       >
-        <LobbyPage />
+        <LobbyPageInner />
       </Suspense>
     </SessionProvider>
   );
