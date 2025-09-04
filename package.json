@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
-
   "scripts": {
     "dev": "next dev",
     "server:dev": "ts-node --transpile-only server.ts",
@@ -11,8 +10,9 @@
     "start": "node dist/server.js",
     "lint": "next lint"
   },
-  "engines": { "node": "20.x" }
-,
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "@next-auth/mongodb-adapter": "^1.1.3",
     "@types/express": "^5.0.3",
@@ -21,7 +21,7 @@
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.0",
     "express": "^4.18.2",
-    "mongodb": "^5.9.2",
+    "mongodb": "^6.19.0",
     "mongoose": "^8.17.0",
     "next": "^15.3.5",
     "next-auth": "^4.24.11",
