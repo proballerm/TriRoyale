@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TriRoyale 🎮  
 
-## Getting Started
+A real-time **Trivia Battle Royale** game built with **Next.js**, **Express**, **Socket.IO**, and **MongoDB**. Players compete in elimination rounds until one winner remains.  
 
-First, run the development server:
+**Play Now:** [TriRoyale Live on Render](https://triroyale.onrender.com)  
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+---
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🎯 Features  
+- ⚡ Real-time multiplayer gameplay with Socket.IO  
+- 🎲 Battle Royale format: wrong answers = elimination  
+- 📚 Multiple trivia categories: Sports, Science, Movies, History, Geography, Music, or “All”  
+- 🤖 Trivia bots for testing and balance  
+- 💾 MongoDB-backed question bank with cooldowns to prevent repeats  
+- 📊 Real-time leaderboards  
+- 🔐 Secure login (email/password with JWT + Google OAuth2)  
+- 🌐 Web-first, with mobile app (React Native + Expo) in progress  
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🕹️ How to Play  
+1. Go to [triroyale.onrender.com](https://triroyale.onrender.com)  
+2. Log in or play as guest  
+3. Join a lobby and choose a category  
+4. Answer before the timer ends  
+5. Wrong answers eliminate you — last player standing wins!  
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ For Developers  
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+TriRoyale is currently configured to run on a **deployed server environment** (e.g., Render).  
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+If you fork this repository and want to run it locally, you’ll need to:  
+- Adjust **API routes** and **socket server URLs** for `localhost`.  
+- Set up your own MongoDB instance.  
+- Configure environment variables (`.env`) for authentication and database connections.  
 
-## Deploy on Vercel
+> ⚠️ By default, this repository is ready for **server deployment**, not local play.  
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 📊 Roadmap  
+- ✅ Multiplayer trivia on web  
+- ✅ MongoDB persistence for question bank  
+- ✅ Trivia bots support  
+- 🔄 Mobile app (React Native + Expo)  
+- 🔄 Advanced leaderboards with player stats  
+- 🔄 Game replays & highlights  
+
+---
+
+## 🤝 Contributing  
+Pull requests are welcome! Fork the repository, make your changes, and submit a PR with a clear description.  
+
+---
+
+## 📜 License  
+MIT License © 2025 Prabal Malavalli  
