@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "dev": "next dev",
-    "server:dev": "tsx server.ts",
+    "server:dev": "tsx server-bootstrap.ts",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "node dist/server.js",
     "lint": "next lint"
