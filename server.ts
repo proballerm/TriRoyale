@@ -21,9 +21,13 @@ const answerMaps: Record<string, Map<string, string>> = {};
 const eliminatedPlayers: Record<string, Set<string>> = {};
 const roundTimers: Record<string, NodeJS.Timeout | undefined> = {};
 const intermissionTimers: Record<string, NodeJS.Timeout | undefined> = {};
+const pendingDisconnects: Record<string, Map<string, NodeJS.Timeout>> = {};
+const answerRateLimits = new Map<string, { windowStart: number; count: number }>();
 
 const INTERMISSION_MS = 5000;
 const QUESTION_TIME_SECONDS = 15;
+const RECONNECT_GRACE_MS = 20_000;
+const ANSWER_RATE_LIMIT = 8;
 const VALID_CATEGORIES = new Set([
   "Battle Royale",
   "Sports",
@@ -34,13 +38,26 @@ const VALID_CATEGORIES = new Set([
   "Music",
 ]);
 
+const metrics = {
+  startedAt: Date.now(),
+  totalConnections: 0,
+  reconnects: 0,
+  matchesStarted: 0,
+  questionsGenerated: 0,
+  questionGenerationMs: 0,
+  answersAccepted: 0,
+  answersRejected: 0,
+};
+
 type GeneratedQuestion = Awaited<ReturnType<typeof generateTriviaQuestion>>;
 
 type ActiveQuestion = GeneratedQuestion & {
+  id: string;
   category: string;
   matchId: string;
   timeLimit: number;
   startTime: number;
+  deadline: number;
 };
 
 function isBot(username: string): boolean {
@@ -55,6 +72,7 @@ function sanitizeUsername(value: unknown): string | null {
 
 function getPublicQuestion(question: ActiveQuestion) {
   return {
+    questionId: question.id,
     category: question.category,
     matchId: question.matchId,
     question: question.question,
@@ -65,6 +83,14 @@ function getPublicQuestion(question: ActiveQuestion) {
   };
 }
 
+function activeMatchCount(): number {
+  return Object.values(gameStartedFlags).filter(Boolean).length;
+}
+
+function activePlayerCount(): number {
+  return Object.values(lobbies).reduce((total, players) => total + players.length, 0);
+}
+
 function clearMatchTimers(matchId: string) {
   if (roundTimers[matchId]) clearTimeout(roundTimers[matchId]);
   if (intermissionTimers[matchId]) clearTimeout(intermissionTimers[matchId]);
@@ -72,8 +98,18 @@ function clearMatchTimers(matchId: string) {
   delete intermissionTimers[matchId];
 }
 
+function clearDisconnectTimer(matchId: string, username: string): boolean {
+  const timer = pendingDisconnects[matchId]?.get(username);
+  if (!timer) return false;
+  clearTimeout(timer);
+  pendingDisconnects[matchId].delete(username);
+  return true;
+}
+
 function resetMatch(matchId: string) {
   clearMatchTimers(matchId);
+  for (const timer of pendingDisconnects[matchId]?.values() || []) clearTimeout(timer);
+  delete pendingDisconnects[matchId];
   gameStartedFlags[matchId] = false;
   currentQuestions[matchId] = null;
   lobbies[matchId] = [];
@@ -81,6 +117,17 @@ function resetMatch(matchId: string) {
   botsLaunchedFlags[matchId] = false;
   answerMaps[matchId] = new Map();
   eliminatedPlayers[matchId] = new Set();
+}
+
+function isAnswerRateLimited(socketId: string): boolean {
+  const now = Date.now();
+  const entry = answerRateLimits.get(socketId);
+  if (!entry || now - entry.windowStart >= 1000) {
+    answerRateLimits.set(socketId, { windowStart: now, count: 1 });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > ANSWER_RATE_LIMIT;
 }
 
 async function emitQuestionToBots(io: Server, matchId: string, question: ActiveQuestion) {
@@ -106,8 +153,11 @@ async function startRound(io: Server, matchId: string, category: string) {
       : category;
 
   let generated: GeneratedQuestion;
+  const generationStartedAt = Date.now();
   try {
     generated = await generateTriviaQuestion(actualCategory);
+    metrics.questionsGenerated += 1;
+    metrics.questionGenerationMs += Date.now() - generationStartedAt;
   } catch (error) {
     console.error(`[Match ${matchId}] Failed to load question`, error);
     io.to(matchId).emit("gameError", {
@@ -117,12 +167,15 @@ async function startRound(io: Server, matchId: string, category: string) {
     return;
   }
 
+  const startTime = Date.now();
   const question: ActiveQuestion = {
     ...generated,
+    id: randomUUID(),
     category: actualCategory,
     matchId,
     timeLimit: QUESTION_TIME_SECONDS,
-    startTime: Date.now(),
+    startTime,
+    deadline: startTime + QUESTION_TIME_SECONDS * 1000,
   };
 
   currentQuestions[matchId] = question;
@@ -179,9 +232,7 @@ async function startRound(io: Server, matchId: string, category: string) {
         const winner = survivors[0];
         io.to(matchId).emit("gameOver", { winner });
 
-        if (!isBot(winner)) {
-          await recordWin(winner, category, io);
-        }
+        if (!isBot(winner)) await recordWin(winner, category, io);
       } else if (survivors.length === 0) {
         io.to(matchId).emit("gameOver", { winner: null });
       } else {
@@ -210,16 +261,45 @@ nextApp.prepare().then(() => {
     res.json({ matchId: randomUUID() });
   });
 
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      status: "ok",
+      uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
+      activeConnections: io.engine.clientsCount,
+      activeMatches: activeMatchCount(),
+      activePlayers: activePlayerCount(),
+    });
+  });
+
+  app.get("/api/metrics", (_req, res) => {
+    res.json({
+      ...metrics,
+      uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
+      activeConnections: io.engine.clientsCount,
+      activeMatches: activeMatchCount(),
+      activePlayers: activePlayerCount(),
+      averageQuestionGenerationMs:
+        metrics.questionsGenerated > 0
+          ? Math.round(metrics.questionGenerationMs / metrics.questionsGenerated)
+          : 0,
+    });
+  });
+
   io.on("connection", (socket: Socket) => {
-    socket.on("joinLobby", async ({ username, category, matchId }) => {
+    metrics.totalConnections += 1;
+
+    const joinRoom = async ({ username, category, matchId }: Record<string, unknown>) => {
       const safeUsername = sanitizeUsername(username);
       if (!safeUsername || typeof matchId !== "string" || !matchId.trim()) return;
-      if (!VALID_CATEGORIES.has(category)) {
+      if (!VALID_CATEGORIES.has(String(category))) {
         socket.emit("gameError", { message: "Invalid trivia category." });
         return;
       }
 
       const roomId = matchId.trim().slice(0, 100);
+      const wasReconnecting = clearDisconnectTimer(roomId, safeUsername);
+      if (wasReconnecting) metrics.reconnects += 1;
+
       if (gameStartedFlags[roomId] && !lobbies[roomId]?.includes(safeUsername)) {
         socket.emit("gameError", { message: "This match has already started." });
         return;
@@ -227,20 +307,19 @@ nextApp.prepare().then(() => {
 
       lobbies[roomId] ??= [];
       eliminatedPlayers[roomId] ??= new Set();
+      pendingDisconnects[roomId] ??= new Map();
 
-      if (!lobbies[roomId].includes(safeUsername)) {
-        lobbies[roomId].push(safeUsername);
-      }
+      if (!lobbies[roomId].includes(safeUsername)) lobbies[roomId].push(safeUsername);
       if (!hosts[roomId] && !isBot(safeUsername)) hosts[roomId] = safeUsername;
 
       socket.join(roomId);
       socket.data.username = safeUsername;
-      socket.data.category = category;
+      socket.data.category = String(category);
       socket.data.matchId = roomId;
 
       if (!botsLaunchedFlags[roomId] && !isBot(safeUsername)) {
         botsLaunchedFlags[roomId] = true;
-        launchBots(io, roomId, category).catch((error) => {
+        launchBots(io, roomId, String(category)).catch((error) => {
           console.error(`[Match ${roomId}] Bot launch failed`, error);
           botsLaunchedFlags[roomId] = false;
         });
@@ -252,7 +331,20 @@ nextApp.prepare().then(() => {
         host: hosts[roomId],
         matchId: roomId,
       });
-    });
+
+      const question = currentQuestions[roomId];
+      socket.emit("gameStatus", {
+        matchId: roomId,
+        category,
+        started: gameStartedFlags[roomId] || false,
+        question: question ? getPublicQuestion(question) : null,
+        eliminated: eliminatedPlayers[roomId]?.has(safeUsername) ? [safeUsername] : [],
+        reconnected: wasReconnecting,
+      });
+    };
+
+    socket.on("joinLobby", joinRoom);
+    socket.on("resumeMatch", joinRoom);
 
     socket.on("startGame", async ({ category, matchId }) => {
       const roomId = socket.data.matchId;
@@ -271,26 +363,41 @@ nextApp.prepare().then(() => {
       }
 
       gameStartedFlags[roomId] = true;
+      metrics.matchesStarted += 1;
       io.to(roomId).emit("startGame", { category, matchId: roomId });
       await startRound(io, roomId, category);
     });
 
-    socket.on("answer", ({ answer }) => {
+    socket.on("answer", ({ answer, questionId }) => {
       const username = socket.data.username;
       const matchId = socket.data.matchId;
-      if (
+      const question = matchId ? currentQuestions[matchId] : null;
+
+      const invalid =
         !username ||
         !matchId ||
         typeof answer !== "string" ||
+        typeof questionId !== "string" ||
+        !question ||
+        question.id !== questionId ||
+        Date.now() > question.deadline + 250 ||
         !answerMaps[matchId] ||
         eliminatedPlayers[matchId]?.has(username) ||
-        !lobbies[matchId]?.includes(username)
-      ) {
+        !lobbies[matchId]?.includes(username) ||
+        isAnswerRateLimited(socket.id);
+
+      if (invalid) {
+        metrics.answersRejected += 1;
         return;
       }
 
       if (!answerMaps[matchId].has(username)) {
         answerMaps[matchId].set(username, answer.slice(0, 100));
+        metrics.answersAccepted += 1;
+        socket.emit("answerAccepted", {
+          questionId,
+          receivedAt: Date.now(),
+        });
       }
     });
 
@@ -309,20 +416,36 @@ nextApp.prepare().then(() => {
     });
 
     socket.on("disconnect", () => {
+      answerRateLimits.delete(socket.id);
       const { username, matchId, category } = socket.data;
-      if (!username || !matchId || !lobbies[matchId]) return;
+      if (!username || !matchId || !lobbies[matchId] || isBot(username)) return;
 
-      lobbies[matchId] = lobbies[matchId].filter((name) => name !== username);
-      if (hosts[matchId] === username) {
-        hosts[matchId] = lobbies[matchId].find((name) => !isBot(name)) || null;
-      }
+      pendingDisconnects[matchId] ??= new Map();
+      clearDisconnectTimer(matchId, username);
 
-      io.to(matchId).emit("lobbyUpdate", {
-        category,
-        players: lobbies[matchId],
-        host: hosts[matchId],
-        matchId,
+      io.to(matchId).emit("playerConnectionChanged", {
+        username,
+        connected: false,
+        gracePeriodSeconds: RECONNECT_GRACE_MS / 1000,
       });
+
+      const timer = setTimeout(() => {
+        lobbies[matchId] = lobbies[matchId].filter((name) => name !== username);
+        pendingDisconnects[matchId]?.delete(username);
+
+        if (hosts[matchId] === username) {
+          hosts[matchId] = lobbies[matchId].find((name) => !isBot(name)) || null;
+        }
+
+        io.to(matchId).emit("lobbyUpdate", {
+          category,
+          players: lobbies[matchId],
+          host: hosts[matchId],
+          matchId,
+        });
+      }, RECONNECT_GRACE_MS);
+
+      pendingDisconnects[matchId].set(username, timer);
     });
   });
 
