@@ -1,27 +1,23 @@
 "use client";
-import { Suspense } from "react";
+
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEffect, useState, useRef } from "react";
 import { getSocket } from "@/lib/socket";
 import { useSession, SessionProvider } from "next-auth/react";
-
-// Types
 
 type QuestionPayload = {
   category: string;
   question: string;
   answers: string[];
+  difficulty?: "easy" | "medium" | "hard";
   timeLimit: number;
   startTime: number;
   matchId: string;
 };
 
-type AnswerResult = {
-  correct: boolean;
-};
-
 type RoundResultPayload = {
   correctAnswer: string;
+  explanation?: string;
   eliminated: string[];
   survivors: string[];
 };
@@ -36,254 +32,303 @@ function InnerGamePage() {
   const [questionData, setQuestionData] = useState<QuestionPayload | null>(null);
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [eliminated, setEliminated] = useState(false);
+  const [gameFinished, setGameFinished] = useState(false);
   const [winner, setWinner] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [roundMessage, setRoundMessage] = useState<string | null>(null);
-  const [gamePhase, setGamePhase] = useState<"question" | "intermission" | "eliminated" | "winner">("question");
-  const [playersRemaining, setPlayersRemaining] = useState<number>(0);
+  const [roundResult, setRoundResult] = useState<RoundResultPayload | null>(null);
+  const [playersRemaining, setPlayersRemaining] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    if (status !== "authenticated" || !session?.user?.name || !matchId) return;
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
-    const username = session.user.name; // capture once
+  const setupTimer = (startTime: number, timeLimit: number) => {
+    stopTimer();
+    const questionEndTime = startTime + timeLimit * 1000;
 
-    const socket = getSocket();
-
-    const handleConnect = () => {
-      socket.emit("checkGameStatus", { category, matchId });
-    };
-
-    socket.on("connect", handleConnect);
-
-    socket.on("gameStatus", (payload: any) => {
-      if (payload.matchId !== matchId) return;
-      if (payload.started && payload.question) {
-        loadQuestion(payload.question);
-      }
-      if (payload.eliminated?.includes(username)) {
-        setEliminated(true);
-      }
-    });
-
-    socket.on("newQuestion", (data: QuestionPayload) => {
-      if (data.matchId !== matchId) return;
-      setRoundMessage(null);
-      setGamePhase("question");
-      loadQuestion(data);
-    });
-
-    socket.on("answerResult", (data: AnswerResult) => {
-      if (!data.correct) {
-        setEliminated(true);
-      }
-    });
-
-    // ⬇️ explicit type for the destructured param
-    socket.on("eliminated", ({ username: elimUser }: { username: string }) => {
-      if (elimUser === username) {
-        setEliminated(true);
-      }
-    });
-
-    socket.on("roundResult", (payload: RoundResultPayload) => {
-      setRoundMessage(
-        `✅ Correct Answer: ${payload.correctAnswer}\n` +
-          `❌ Eliminated: ${payload.eliminated.join(", ") || "None"}\n` +
-          `👥 Remaining: ${payload.survivors.join(", ")}`
+    const updateTime = () => {
+      const secondsLeft = Math.max(
+        0,
+        Math.ceil((questionEndTime - Date.now()) / 1000),
       );
-    });
-
-    socket.on("playersRemaining", ({ count }: { count: number }) => {
-      setPlayersRemaining(count);
-      setGamePhase("intermission");
-    });
-
-    socket.on("gameOver", (payload: { winner: string | null }) => {
-      setWinner(payload.winner);
-    });
-
-    socket.on("error", (payload: { message: string }) => {
-      alert(payload.message);
-      router.push("/");
-    });
-
-    if (socket.connected) handleConnect();
-
-    return () => {
-      socket.off("connect", handleConnect);
-      socket.off("gameStatus");
-      socket.off("newQuestion");
-      socket.off("answerResult");
-      socket.off("roundResult");
-      socket.off("playersRemaining");
-      socket.off("gameOver");
-      socket.off("playerEliminated");
-      socket.off("error");
-
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      setTimeLeft(secondsLeft);
+      if (secondsLeft <= 0) stopTimer();
     };
-  }, [status, session, category, matchId, router]);
+
+    updateTime();
+    timerRef.current = setInterval(updateTime, 250);
+  };
 
   const loadQuestion = (question: QuestionPayload) => {
     setQuestionData(question);
     setSelectedAnswer(null);
+    setRoundResult(null);
+    setPlayersRemaining(null);
     setupTimer(question.startTime, question.timeLimit);
   };
 
-  const setupTimer = (startTime: number, timeLimit: number) => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
+  useEffect(() => {
+    if (status !== "authenticated" || !session?.user?.name || !matchId) return;
 
-    const questionEndTime = startTime + timeLimit * 1000;
+    const username = session.user.name;
+    const socket = getSocket();
 
-    const updateTime = () => {
-      const secondsLeft = Math.max(0, Math.floor((questionEndTime - Date.now()) / 1000));
-      setTimeLeft(secondsLeft);
+    const checkStatus = () => {
+      socket.emit("checkGameStatus", { category, matchId });
+    };
 
-      if (secondsLeft <= 0) {
-        clearInterval(timerRef.current!);
-        handleTimeExpired();
+    const handleGameStatus = (payload: {
+      matchId: string;
+      started: boolean;
+      question?: QuestionPayload | null;
+      eliminated?: string[];
+    }) => {
+      if (payload.matchId !== matchId) return;
+      if (payload.started && payload.question) loadQuestion(payload.question);
+      if (payload.eliminated?.includes(username)) setEliminated(true);
+    };
+
+    const handleNewQuestion = (question: QuestionPayload) => {
+      if (question.matchId !== matchId) return;
+      setError(null);
+      loadQuestion(question);
+    };
+
+    const handleEliminated = ({ username: eliminatedUser }: { username: string }) => {
+      if (eliminatedUser === username) {
+        stopTimer();
+        setEliminated(true);
       }
     };
 
-    updateTime();
-    timerRef.current = setInterval(updateTime, 1000);
-  };
+    const handleRoundResult = (payload: RoundResultPayload) => {
+      stopTimer();
+      setTimeLeft(0);
+      setRoundResult(payload);
+    };
 
-  const handleTimeExpired = () => {
-    const socket = getSocket();
-    socket.emit("answer", {
-      username: session?.user?.name,
-      answer: "__TIMEOUT__",
-      category,
-      matchId,
-    });
-  };
+    const handlePlayersRemaining = ({ count }: { count: number }) => {
+      setPlayersRemaining(count);
+    };
 
-  const handleAnswerClick = (answer: string) => {
-    if (!session?.user?.name || selectedAnswer || !matchId || timeLeft === null || timeLeft <= 0) return;
+    const handleGameOver = ({ winner: gameWinner }: { winner: string | null }) => {
+      stopTimer();
+      setGameFinished(true);
+      setWinner(gameWinner);
+    };
 
-    const socket = getSocket();
-    setSelectedAnswer(answer);
-    if (timerRef.current) {
-      clearInterval(timerRef.current);  // ✅ Stop the timeout emit
-      timerRef.current = null;
+    const handleGameError = ({ message }: { message: string }) => {
+      stopTimer();
+      setError(message);
+    };
+
+    socket.on("connect", checkStatus);
+    socket.on("gameStatus", handleGameStatus);
+    socket.on("newQuestion", handleNewQuestion);
+    socket.on("eliminated", handleEliminated);
+    socket.on("roundResult", handleRoundResult);
+    socket.on("playersRemaining", handlePlayersRemaining);
+    socket.on("gameOver", handleGameOver);
+    socket.on("gameError", handleGameError);
+
+    if (socket.connected) checkStatus();
+    else socket.connect();
+
+    return () => {
+      socket.off("connect", checkStatus);
+      socket.off("gameStatus", handleGameStatus);
+      socket.off("newQuestion", handleNewQuestion);
+      socket.off("eliminated", handleEliminated);
+      socket.off("roundResult", handleRoundResult);
+      socket.off("playersRemaining", handlePlayersRemaining);
+      socket.off("gameOver", handleGameOver);
+      socket.off("gameError", handleGameError);
+      stopTimer();
+    };
+  }, [status, session?.user?.name, category, matchId]);
+
+  const submitAnswer = (answer: string) => {
+    if (
+      !selectedAnswer &&
+      matchId &&
+      timeLeft !== null &&
+      timeLeft > 0 &&
+      !roundResult
+    ) {
+      setSelectedAnswer(answer);
+      getSocket().emit("answer", { answer });
     }
+  };
 
-    console.log(`[Answer Submitted] ${session.user.name} → ${answer}, timeLeft=${timeLeft}`);
-
-    socket.emit("answer", {
-      username: session.user.name,
-      answer,
-      category,
-      matchId,
-    });
+  const playAgain = () => {
+    router.push(`/lobby?category=${encodeURIComponent(category)}&new=1`);
   };
 
   if (status === "loading") {
-    return <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE]">
-      <p className="text-white text-xl font-bold">Loading…</p>
-    </main>;
+    return (
+      <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE]">
+        <p className="text-white text-xl font-bold">Loading…</p>
+      </main>
+    );
   }
 
   if (status === "unauthenticated") {
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
+    if (typeof window !== "undefined") window.location.href = "/login";
     return null;
   }
 
   if (eliminated) {
     return (
-      <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE] p-4">
-        <div className="max-w-md w-full text-center bg-white/10 backdrop-blur p-8 rounded-3xl border border-white/30 shadow-2xl">
-          <h1 className="text-white text-3xl font-extrabold mb-4">Eliminated!</h1>
-          <p className="text-white mb-4">Sorry {session?.user?.name}, you were eliminated.</p>
-          <button onClick={() => {
-            localStorage.removeItem(`matchId_${category}`);
-            router.push(`/lobby?category=${category}&new=1`);
-          }}
-            className="w-full py-3 rounded bg-yellow-400 hover:bg-yellow-300 text-[#003E7E] font-bold text-lg transition mt-4">
-            🔁 Play Again
-          </button>
-          <button onClick={() => router.push("/")}
-            className="w-full py-3 rounded bg-white/20 hover:bg-white/30 text-white font-bold text-lg transition mt-4">
-            🏠 Return Home
-          </button>
-        </div>
-      </main>
+      <ResultCard
+        title="Eliminated!"
+        message={`Sorry ${session?.user?.name}, you were eliminated.`}
+        onPlayAgain={playAgain}
+        onHome={() => router.push("/")}
+      />
     );
   }
 
-  if (winner) {
+  if (gameFinished) {
+    const message = winner
+      ? winner === session?.user?.name
+        ? "You won Trivia Royale!"
+        : `${winner} won the match.`
+      : "No player survived the final round.";
+
     return (
-      <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE] p-4">
-        <div className="max-w-md w-full text-center bg-white/10 backdrop-blur p-8 rounded-3xl border border-white/30 shadow-2xl">
-          <h1 className="text-yellow-300 text-3xl font-extrabold mb-4">🎉 We Have a Winner! 🎉</h1>
-          <p className="text-white mb-4">
-            {winner === session?.user?.name ? "You won Trivia Royale!" : `${winner} has won.`}
-          </p>
-          <button onClick={() => {
-            localStorage.removeItem(`matchId_${category}`);
-            router.push(`/lobby?category=${category}&new=1`);
-          }}
-            className="w-full py-3 rounded bg-yellow-400 hover:bg-yellow-300 text-[#003E7E] font-bold text-lg transition mt-4">
-            🔁 Play Again
-          </button>
-          <button onClick={() => router.push("/")}
-            className="w-full py-3 rounded bg-white/20 hover:bg-white/30 text-white font-bold text-lg transition mt-4">
-            🏠 Return Home
-          </button>
-        </div>
-      </main>
+      <ResultCard
+        title={winner ? "🎉 We Have a Winner!" : "Match Over"}
+        message={message}
+        onPlayAgain={playAgain}
+        onHome={() => router.push("/")}
+      />
     );
   }
 
   return (
     <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE] p-4">
       <div className="max-w-md w-full text-center bg-white/10 backdrop-blur p-8 rounded-3xl border border-white/30 shadow-2xl">
-        <h1 className="text-white text-3xl font-extrabold mb-4">Trivia Royale Game</h1>
-        <p className="text-white mb-2">
-          Category: <span className="font-bold">{category}</span>
+        <h1 className="text-white text-3xl font-extrabold mb-3">
+          Trivia Royale
+        </h1>
+        <p className="text-white mb-3">
+          Category: <span className="font-bold">{questionData?.category || category}</span>
+          {questionData?.difficulty ? (
+            <span className="ml-2 text-sm capitalize text-yellow-200">
+              · {questionData.difficulty}
+            </span>
+          ) : null}
         </p>
 
-        {timeLeft !== null && gamePhase === "question" && (
-          <p className="text-yellow-300 font-extrabold text-xl mb-4">⏳ Time Left: {timeLeft}s</p>
-        )}
-
-        {roundMessage && (
-          <p className="text-green-300 whitespace-pre-line mb-4">{roundMessage}</p>
-        )}
-
-        {gamePhase === "intermission" ? (
-          <div>
-            <h2 className="text-white text-2xl font-bold mb-4">🧠 Get Ready!</h2>
-            <p className="text-yellow-300 text-lg font-semibold">{playersRemaining} players remaining</p>
-            <p className="text-white mt-2">Next question starting shortly…</p>
+        {error && (
+          <div className="mb-5 rounded-lg bg-red-500/20 p-4 text-red-100">
+            <p className="font-bold">Match error</p>
+            <p className="mt-1 text-sm">{error}</p>
+            <button
+              onClick={playAgain}
+              className="mt-4 rounded bg-white px-4 py-2 font-bold text-[#003E7E]"
+            >
+              Return to Lobby
+            </button>
           </div>
-        ) : questionData ? (
+        )}
+
+        {!error && roundResult ? (
+          <div className="rounded-xl bg-white/10 p-5 text-left">
+            <p className="text-lg font-extrabold text-green-300">
+              Correct answer: {roundResult.correctAnswer}
+            </p>
+            {roundResult.explanation && (
+              <p className="mt-2 text-sm leading-relaxed text-white">
+                {roundResult.explanation}
+              </p>
+            )}
+            <p className="mt-4 text-sm text-red-200">
+              Eliminated: {roundResult.eliminated.join(", ") || "None"}
+            </p>
+            <p className="mt-1 text-sm text-yellow-100">
+              {playersRemaining ?? roundResult.survivors.length} players remaining
+            </p>
+            <p className="mt-4 text-center font-semibold text-white">
+              Next question starting shortly…
+            </p>
+          </div>
+        ) : !error && questionData ? (
           <>
-            <h2 className="text-white text-2xl font-bold mb-6">{questionData.question}</h2>
+            <p className="text-yellow-300 font-extrabold text-xl mb-4">
+              ⏳ {timeLeft ?? questionData.timeLimit}s
+            </p>
+            <h2 className="text-white text-2xl font-bold mb-6">
+              {questionData.question}
+            </h2>
             <div className="space-y-3">
-              {questionData.answers.map((ans, idx) => (
-                <button key={idx} onClick={() => handleAnswerClick(ans)} disabled={!!selectedAnswer}
-                  className={`w-full py-3 rounded ${selectedAnswer === ans
-                    ? "bg-green-400 text-[#003E7E] font-bold"
-                    : "bg-yellow-400 hover:bg-yellow-300 text-[#003E7E]"
-                    } text-lg font-bold transition`}>
-                  {ans}
+              {questionData.answers.map((answer) => (
+                <button
+                  key={answer}
+                  onClick={() => submitAnswer(answer)}
+                  disabled={
+                    !!selectedAnswer ||
+                    timeLeft === null ||
+                    timeLeft <= 0
+                  }
+                  className={`w-full py-3 rounded text-lg font-bold transition disabled:cursor-not-allowed ${
+                    selectedAnswer === answer
+                      ? "bg-green-400 text-[#003E7E]"
+                      : "bg-yellow-400 hover:bg-yellow-300 disabled:bg-white/20 disabled:text-white/70 text-[#003E7E]"
+                  }`}
+                >
+                  {answer}
                 </button>
               ))}
             </div>
+            {selectedAnswer && (
+              <p className="mt-4 text-sm font-semibold text-white">
+                Answer locked in. Waiting for the round to end…
+              </p>
+            )}
           </>
-        ) : (
-          <p className="text-white mt-6">Waiting for the first question…</p>
-        )}
+        ) : !error ? (
+          <p className="text-white mt-6">Loading the first question…</p>
+        ) : null}
+      </div>
+    </main>
+  );
+}
+
+function ResultCard({
+  title,
+  message,
+  onPlayAgain,
+  onHome,
+}: {
+  title: string;
+  message: string;
+  onPlayAgain: () => void;
+  onHome: () => void;
+}) {
+  return (
+    <main className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#4EB8F2] to-[#0072CE] p-4">
+      <div className="max-w-md w-full text-center bg-white/10 backdrop-blur p-8 rounded-3xl border border-white/30 shadow-2xl">
+        <h1 className="text-yellow-300 text-3xl font-extrabold mb-4">{title}</h1>
+        <p className="text-white mb-4">{message}</p>
+        <button
+          onClick={onPlayAgain}
+          className="w-full py-3 rounded bg-yellow-400 hover:bg-yellow-300 text-[#003E7E] font-bold text-lg transition mt-4"
+        >
+          🔁 Play Again
+        </button>
+        <button
+          onClick={onHome}
+          className="w-full py-3 rounded bg-white/20 hover:bg-white/30 text-white font-bold text-lg transition mt-4"
+        >
+          🏠 Return Home
+        </button>
       </div>
     </main>
   );
