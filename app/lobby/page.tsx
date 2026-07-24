@@ -5,7 +5,6 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, Suspense } from "react";
 import { getSocket } from "@/lib/socket";
 import { useSession, SessionProvider } from "next-auth/react";
-import { v4 as uuidv4 } from "uuid";
 
 type LobbyUpdate = {
   matchId: string;
@@ -46,7 +45,7 @@ function LobbyPageInner() {
   );
 
   const generatedMatchId = useMemo(
-    () => incomingMatchId || uuidv4(),
+    () => incomingMatchId || crypto.randomUUID(),
     [incomingMatchId],
   );
 
