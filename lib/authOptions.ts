@@ -6,7 +6,16 @@ import { MongoDBAdapter } from "@next-auth/mongodb-adapter";
 import clientPromise from "@/lib/mongodb";
 import { compare } from "bcryptjs";
 
+const authSecret = process.env.NEXTAUTH_SECRET;
+
+if (!authSecret) {
+  throw new Error(
+    "NEXTAUTH_SECRET is required. Add a stable value to .env.local before starting the server.",
+  );
+}
+
 export const authOptions: NextAuthOptions = {
+  secret: authSecret,
   adapter: MongoDBAdapter(clientPromise),
   providers: [
     CredentialsProvider({
@@ -19,13 +28,15 @@ export const authOptions: NextAuthOptions = {
         const client = await clientPromise;
         const db = client.db();
 
-        const user = await db
-          .collection("users")
-          .findOne({ email: credentials?.email });
+        const email = credentials?.email?.trim().toLowerCase();
+        const password = credentials?.password;
 
-        if (!user) return null;
+        if (!email || !password) return null;
 
-        const isValid = await compare(credentials!.password, user.password);
+        const user = await db.collection("users").findOne({ email });
+        if (!user?.password) return null;
+
+        const isValid = await compare(password, user.password);
         if (!isValid) return null;
 
         return {
@@ -40,6 +51,13 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     }),
   ],
-  session: { strategy: "jwt" },
+  session: {
+    strategy: "jwt",
+    maxAge: 30 * 24 * 60 * 60,
+    updateAge: 24 * 60 * 60,
+  },
+  jwt: {
+    maxAge: 30 * 24 * 60 * 60,
+  },
   pages: { signIn: "/login" },
 };
