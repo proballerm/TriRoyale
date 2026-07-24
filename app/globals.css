@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #07111f;
+  --foreground: #f8fafc;
 }
 
 @theme inline {
@@ -12,15 +12,73 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
 }
 
 body {
+  margin: 0;
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+a,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(103, 232, 249, 0.28);
+  color: white;
+}
+
+.arena-shell {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(14, 165, 233, 0.18), transparent 32%),
+    radial-gradient(circle at 82% 76%, rgba(124, 58, 237, 0.18), transparent 34%),
+    linear-gradient(145deg, #06101e 0%, #0a1830 48%, #080d1b 100%);
+}
+
+.arena-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, black 25%, transparent 95%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .arena-shell::before {
+    content: "";
+    position: fixed;
+    inset: -50%;
+    pointer-events: none;
+    background: conic-gradient(
+      from 90deg at 50% 50%,
+      transparent 0deg,
+      rgba(56, 189, 248, 0.035) 50deg,
+      transparent 110deg,
+      rgba(168, 85, 247, 0.035) 190deg,
+      transparent 260deg
+    );
+    animation: arena-drift 28s linear infinite;
+  }
+}
+
+@keyframes arena-drift {
+  to {
+    transform: rotate(360deg);
+  }
 }
