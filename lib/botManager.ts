@@ -85,7 +85,9 @@ export async function launchBots(
     });
 
     socket.on("eliminated", ({ username }: { username: string }) => {
-      if (username === name) alive = false;
+      if (username !== name) return;
+      alive = false;
+      socket.disconnect();
     });
 
     socket.on("gameOver", () => {
