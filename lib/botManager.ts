@@ -1,84 +1,106 @@
-// lib/botManager.ts
 import ClientIO from "socket.io-client";
 
 const BOT_COUNT = 19;
 const BOT_NAMES = Array.from({ length: BOT_COUNT }, (_, i) => `🤖Bot_${i + 1}`);
 
-// Prefer explicit WS_URL; fall back to public site URL; finally localhost for dev
 const WS_URL =
   process.env.WS_URL ||
   process.env.NEXT_PUBLIC_WS_URL ||
   process.env.APP_URL ||
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  (process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : "http://localhost:3000");
 
-export async function launchBots(io: any, matchId: string, category: string): Promise<void> {
-  const bots: { name: string; socket: any; alive: boolean }[] = [];
+export async function launchBots(
+  _io: unknown,
+  matchId: string,
+  category: string,
+): Promise<void> {
   const connectedBots: Promise<void>[] = [];
 
   for (const name of BOT_NAMES) {
     const socket = ClientIO(WS_URL, {
       path: "/socket.io",
-      transports: ["websocket"],        // avoid long-polling in prod
+      transports: ["websocket"],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 800,
       forceNew: true,
-      timeout: 10000,                   // fail fast if wrong URL
+      timeout: 10000,
     });
 
-    const bot = { name, socket, alive: true };
-    bots.push(bot);
+    let alive = true;
 
-    const joined = new Promise<void>((resolve) => {
-      let lobbyConfirmed = false;
-
-      socket.on("connect", () => {
-        socket.emit("joinLobby", { username: name, category, matchId });
-      });
-
-      socket.on("lobbyUpdate", (data: { matchId: string; players: string[] }) => {
-        if (data.matchId === matchId && data.players.includes(name) && !lobbyConfirmed) {
-          lobbyConfirmed = true;
+    connectedBots.push(
+      new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
           resolve();
-        }
-      });
+        };
 
-      socket.on("disconnect", () => { bot.alive = false; });
-    });
+        socket.on("connect", () => {
+          socket.emit("joinLobby", { username: name, category, matchId });
+        });
 
-    connectedBots.push(joined);
+        socket.on("lobbyUpdate", (data: { matchId: string; players: string[] }) => {
+          if (data.matchId === matchId && data.players.includes(name)) finish();
+        });
 
-    socket.on("newQuestion", (payload: {
-      question: string;
+        socket.on("connect_error", (error) => {
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        });
+      }),
+    );
+
+    socket.on("botQuestion", (payload: {
       answers: string[];
       timeLimit: number;
       matchId: string;
-      correct: string; // "A" | "B" | "C" | "D"
+      correct: "A" | "B" | "C" | "D";
     }) => {
-      if (!bot.alive || payload.matchId !== matchId) return;
+      if (!alive || payload.matchId !== matchId) return;
 
-      const correctIndex = ["A","B","C","D"].indexOf(payload.correct);
+      const correctIndex = ["A", "B", "C", "D"].indexOf(payload.correct);
       const correctAnswer = payload.answers[correctIndex];
+      const incorrectAnswers = payload.answers.filter(
+        (answer) => answer !== correctAnswer,
+      );
 
-      // ~60% correct rate
       const chooseCorrect = Math.random() < 0.6;
       const chosenAnswer = chooseCorrect
         ? correctAnswer
-        : payload.answers.filter(a => a !== correctAnswer)[Math.floor(Math.random()*3)];
-
-      const delay = Math.random() * (payload.timeLimit * 1000 - 1000) + 500;
+        : incorrectAnswers[Math.floor(Math.random() * incorrectAnswers.length)];
+      const latestDelay = Math.max(700, payload.timeLimit * 1000 - 500);
+      const delay = Math.random() * (latestDelay - 400) + 400;
 
       setTimeout(() => {
-        if (!bot.alive) return;
-        socket.emit("answer", { username: name, matchId, answer: chosenAnswer });
+        if (!alive || !socket.connected) return;
+        socket.emit("answer", { answer: chosenAnswer });
       }, delay);
     });
 
     socket.on("eliminated", ({ username }: { username: string }) => {
-      if (username === name) bot.alive = false;
+      if (username === name) alive = false;
     });
 
-    socket.on("gameOver", () => { bot.alive = true; });
+    socket.on("gameOver", () => {
+      alive = false;
+      socket.disconnect();
+    });
+
+    socket.on("gameError", () => {
+      alive = false;
+      socket.disconnect();
+    });
+
+    socket.on("disconnect", () => {
+      alive = false;
+    });
   }
 
   await Promise.all(connectedBots);
