@@ -58,6 +58,7 @@ export async function launchBots(
     );
 
     socket.on("botQuestion", (payload: {
+      questionId: string;
       answers: string[];
       timeLimit: number;
       matchId: string;
@@ -80,7 +81,10 @@ export async function launchBots(
 
       setTimeout(() => {
         if (!alive || !socket.connected) return;
-        socket.emit("answer", { answer: chosenAnswer });
+        socket.emit("answer", {
+          answer: chosenAnswer,
+          questionId: payload.questionId,
+        });
       }, delay);
     });
 
