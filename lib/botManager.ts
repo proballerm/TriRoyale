@@ -48,7 +48,7 @@ export async function launchBots(
           if (data.matchId === matchId && data.players.includes(name)) finish();
         });
 
-        socket.on("connect_error", (error) => {
+        socket.on("connect_error", (error: Error) => {
           if (!settled) {
             settled = true;
             reject(error);
