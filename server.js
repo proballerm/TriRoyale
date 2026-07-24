@@ -25,7 +25,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
                 default:
                     if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
                     if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
-                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; op = t; break; }
                     if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
                     if (t[2]) _.ops.pop();
                     _.trys.pop(); continue;
@@ -123,7 +123,7 @@ nextApp.prepare().then(function () {
             return __generator(this, function (_c) {
                 switch (_c.label) {
                     case 0:
-                        console.log("\uD83D\uDE80 Start Game for ".concat(category));
+                        console.log("🚀 Start Game for ".concat(category));
                         gameStartedFlags[category] = true;
                         return [4 /*yield*/, generateTriviaQuestion(category)];
                     case 1:
@@ -155,7 +155,7 @@ nextApp.prepare().then(function () {
             }
         });
     });
-    app.all("*", function (req, res) {
+    app.all(/.*/, function (req, res) {
         return handle(req, res);
     });
     httpServer.listen(3000, function () {
