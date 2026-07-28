@@ -24,12 +24,27 @@ export type DuelAnswerResult = {
   score: DuelPlayerScore;
 };
 
-type StoredAnswer = {
+export type StoredDuelAnswer = {
+  playerId: string;
   answer: string;
   responseMs: number;
   correct: boolean;
   points: number;
 };
+
+export type TournamentDuelEngineState = {
+  duelId: string;
+  playerIds: [string, string];
+  questions: DuelQuestion[];
+  scores: DuelPlayerScore[];
+  answersByQuestion: Array<{ questionIndex: number; answers: StoredDuelAnswer[] }>;
+  questionIndex: number;
+  questionStartedAt: number;
+  completed: boolean;
+  updatedAt: number;
+};
+
+type StoredAnswer = Omit<StoredDuelAnswer, "playerId">;
 
 export class TournamentDuelEngine {
   private readonly scores = new Map<string, DuelPlayerScore>();
@@ -48,13 +63,43 @@ export class TournamentDuelEngine {
     if (questions.length === 0) throw new Error("At least one question is required");
 
     for (const playerId of playerIds) {
-      this.scores.set(playerId, {
-        playerId,
-        correctAnswers: 0,
-        score: 0,
-        totalResponseMs: 0,
-      });
+      this.scores.set(playerId, { playerId, correctAnswers: 0, score: 0, totalResponseMs: 0 });
     }
+  }
+
+  static restore(state: TournamentDuelEngineState): TournamentDuelEngine {
+    const engine = new TournamentDuelEngine(state.duelId, state.playerIds, state.questions);
+    engine.questionIndex = state.questionIndex;
+    engine.questionStartedAt = state.questionStartedAt;
+    engine.completed = state.completed;
+    engine.scores.clear();
+    for (const score of state.scores) engine.scores.set(score.playerId, structuredClone(score));
+    for (const entry of state.answersByQuestion) {
+      const answers = new Map<string, StoredAnswer>();
+      for (const answer of entry.answers) {
+        const { playerId, ...stored } = answer;
+        answers.set(playerId, stored);
+      }
+      engine.answersByQuestion.set(entry.questionIndex, answers);
+    }
+    return engine;
+  }
+
+  exportState(): TournamentDuelEngineState {
+    return {
+      duelId: this.duelId,
+      playerIds: [...this.playerIds] as [string, string],
+      questions: structuredClone(this.questions),
+      scores: this.getScores(),
+      answersByQuestion: [...this.answersByQuestion.entries()].map(([questionIndex, answers]) => ({
+        questionIndex,
+        answers: [...answers.entries()].map(([playerId, answer]) => ({ playerId, ...structuredClone(answer) })),
+      })),
+      questionIndex: this.questionIndex,
+      questionStartedAt: this.questionStartedAt,
+      completed: this.completed,
+      updatedAt: Date.now(),
+    };
   }
 
   startQuestion(startedAt = Date.now()): DuelQuestion {
@@ -63,12 +108,7 @@ export class TournamentDuelEngine {
     return this.getCurrentQuestion();
   }
 
-  submitAnswer(
-    playerId: string,
-    questionId: string,
-    answer: string,
-    answeredAt = Date.now(),
-  ): DuelAnswerResult {
+  submitAnswer(playerId: string, questionId: string, answer: string, answeredAt = Date.now()): DuelAnswerResult {
     if (this.completed) throw new Error("Duel is already complete");
     if (!this.scores.has(playerId)) throw new Error("Player is not part of this duel");
 
@@ -78,15 +118,9 @@ export class TournamentDuelEngine {
 
     const answers = this.answersByQuestion.get(this.questionIndex) ?? new Map<string, StoredAnswer>();
     this.answersByQuestion.set(this.questionIndex, answers);
-
     const existing = answers.get(playerId);
     if (existing) {
-      return {
-        accepted: false,
-        correct: existing.correct,
-        points: existing.points,
-        score: this.getScore(playerId),
-      };
+      return { accepted: false, correct: existing.correct, points: existing.points, score: this.getScore(playerId) };
     }
 
     const deadline = this.questionStartedAt + question.timeLimit * 1000;
@@ -101,13 +135,7 @@ export class TournamentDuelEngine {
     score.totalResponseMs += responseMs;
     score.score += points;
     if (correct) score.correctAnswers += 1;
-
-    return {
-      accepted: true,
-      correct,
-      points,
-      score: structuredClone(score),
-    };
+    return { accepted: true, correct, points, score: structuredClone(score) };
   }
 
   hasAnswered(playerId: string): boolean {
@@ -124,7 +152,6 @@ export class TournamentDuelEngine {
       this.completed = true;
       return null;
     }
-
     this.questionIndex += 1;
     this.questionStartedAt = 0;
     return this.getCurrentQuestion();
@@ -136,35 +163,26 @@ export class TournamentDuelEngine {
     return structuredClone(question);
   }
 
-  getQuestionNumber(): number {
-    return this.questionIndex + 1;
+  getQuestionNumber(): number { return this.questionIndex + 1; }
+  getQuestionStartedAt(): number { return this.questionStartedAt; }
+  getQuestionDeadline(): number {
+    if (!this.questionStartedAt) return 0;
+    return this.questionStartedAt + this.getCurrentQuestion().timeLimit * 1000;
   }
-
-  getScores(): DuelPlayerScore[] {
-    return this.playerIds.map((playerId) => this.getScore(playerId));
-  }
-
+  getScores(): DuelPlayerScore[] { return this.playerIds.map((playerId) => this.getScore(playerId)); }
   getScore(playerId: string): DuelPlayerScore {
     const score = this.scores.get(playerId);
     if (!score) throw new Error("Player is not part of this duel");
     return structuredClone(score);
   }
-
-  isComplete(): boolean {
-    return this.completed;
-  }
+  isComplete(): boolean { return this.completed; }
 
   getWinnerId(): string {
     if (!this.completed) throw new Error("Duel is not complete");
     const [one, two] = this.getScores();
-
     if (one.score !== two.score) return one.score > two.score ? one.playerId : two.playerId;
-    if (one.correctAnswers !== two.correctAnswers) {
-      return one.correctAnswers > two.correctAnswers ? one.playerId : two.playerId;
-    }
-    if (one.totalResponseMs !== two.totalResponseMs) {
-      return one.totalResponseMs < two.totalResponseMs ? one.playerId : two.playerId;
-    }
+    if (one.correctAnswers !== two.correctAnswers) return one.correctAnswers > two.correctAnswers ? one.playerId : two.playerId;
+    if (one.totalResponseMs !== two.totalResponseMs) return one.totalResponseMs < two.totalResponseMs ? one.playerId : two.playerId;
     return this.playerIds[0];
   }
 }
