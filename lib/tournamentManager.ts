@@ -40,6 +40,7 @@ export type BotSimulationResult = {
   round: number;
   duelsCompleted: number;
   botsEliminated: number;
+  byesGranted: number;
   remainingPlayers: number;
 };
 
@@ -129,12 +130,10 @@ export class TournamentManager {
     if (maxDuels < 0) throw new Error("maxDuels cannot be negative");
     const simulationRound = this.round;
     let duelsCompleted = 0;
+    let byesGranted = 0;
 
     while (duelsCompleted < maxDuels) {
-      const eligible = this.botQueue.filter((id) => {
-        const player = this.players.get(id);
-        return player?.status === "queued" && player.round === simulationRound;
-      });
+      const eligible = this.queuedBotsForRound(simulationRound);
       if (eligible.length < 2) break;
 
       const oneId = eligible[0];
@@ -148,10 +147,34 @@ export class TournamentManager {
       duelsCompleted += 1;
     }
 
+    const leftoverBots = this.queuedBotsForRound(simulationRound);
+    const activeRoundDuel = [...this.duels.values()].some(
+      (duel) => duel.round === simulationRound && !duel.winnerId,
+    );
+    const queuedHumanThisRound = [...this.players.values()].some(
+      (player) =>
+        player.kind === "human" &&
+        player.status === "queued" &&
+        player.round === simulationRound,
+    );
+
+    if (
+      maxDuels === Number.POSITIVE_INFINITY &&
+      leftoverBots.length === 1 &&
+      !activeRoundDuel &&
+      !queuedHumanThisRound
+    ) {
+      const byePlayer = this.requirePlayer(leftoverBots[0]);
+      byePlayer.round = simulationRound + 1;
+      byesGranted = 1;
+      this.advanceRoundWhenReady();
+    }
+
     return {
       round: simulationRound,
       duelsCompleted,
       botsEliminated: duelsCompleted,
+      byesGranted,
       remainingPlayers: this.remainingPlayers,
     };
   }
@@ -258,6 +281,13 @@ export class TournamentManager {
       names.push(cycle === 0 ? `${first} ${last}` : `${first} ${last} ${cycle + 1}`);
     }
     return shuffle(names, this.random);
+  }
+
+  private queuedBotsForRound(round: number): string[] {
+    return this.botQueue.filter((id) => {
+      const player = this.players.get(id);
+      return player?.status === "queued" && player.round === round;
+    });
   }
 
   private takeNextQueuedPlayer(excludeId?: string): string | null {
