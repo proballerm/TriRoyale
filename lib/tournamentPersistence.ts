@@ -9,6 +9,27 @@ const HISTORY_COLLECTION = "tournament_history";
 const STATS_COLLECTION = "tournament_player_stats";
 const ACTIVE_KEY = "global";
 
+export type TournamentHistoryEntry = {
+  tournamentId: string;
+  champion: TournamentPlayer;
+  startingPlayers: number;
+  rounds: number;
+  humanParticipants: Array<{ id: string; displayName: string; wins: number }>;
+  totalMatches: number;
+  completedAt: Date;
+};
+
+export type TournamentPlayerStats = {
+  playerId: string;
+  displayName: string;
+  tournamentsPlayed: number;
+  tournamentWins: number;
+  duelsWon: number;
+  roundsSurvived: number;
+  longestTournamentRun: number;
+  updatedAt?: Date;
+};
+
 export async function loadActiveTournament(): Promise<TournamentManagerState | null> {
   const client = await clientPromise;
   const document = await client.db().collection(ACTIVE_COLLECTION).findOne<{ state: TournamentManagerState }>({ key: ACTIVE_KEY });
@@ -55,6 +76,36 @@ export async function deleteActiveDuelSession(tournamentId: string, duelId: stri
 export async function clearActiveDuelSessions(tournamentId: string): Promise<void> {
   const client = await clientPromise;
   await client.db().collection(ACTIVE_DUELS_COLLECTION).deleteMany({ tournamentId });
+}
+
+export async function getTournamentHistory(limit = 20): Promise<TournamentHistoryEntry[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const client = await clientPromise;
+  return client.db().collection<TournamentHistoryEntry>(HISTORY_COLLECTION)
+    .find({}, { projection: { _id: 0 } })
+    .sort({ completedAt: -1 })
+    .limit(safeLimit)
+    .toArray();
+}
+
+export async function getTournamentPlayerStats(playerId: string): Promise<TournamentPlayerStats | null> {
+  const safePlayerId = playerId.trim().slice(0, 100);
+  if (!safePlayerId) return null;
+  const client = await clientPromise;
+  return client.db().collection<TournamentPlayerStats>(STATS_COLLECTION).findOne(
+    { playerId: safePlayerId },
+    { projection: { _id: 0 } },
+  );
+}
+
+export async function getTournamentStatsLeaderboard(limit = 25): Promise<TournamentPlayerStats[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const client = await clientPromise;
+  return client.db().collection<TournamentPlayerStats>(STATS_COLLECTION)
+    .find({}, { projection: { _id: 0 } })
+    .sort({ tournamentWins: -1, duelsWon: -1, longestTournamentRun: -1 })
+    .limit(safeLimit)
+    .toArray();
 }
 
 export async function archiveCompletedTournament(
