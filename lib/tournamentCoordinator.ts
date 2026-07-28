@@ -15,6 +15,19 @@ export type TournamentMatchFound = {
   opponent: TournamentPlayer;
 };
 
+export type TournamentSpectatorDuel = {
+  duel: TournamentDuel;
+  playerOne: TournamentPlayer;
+  playerTwo: TournamentPlayer;
+  winner: TournamentPlayer | null;
+};
+
+export type TournamentSpectatorState = {
+  tournament: TournamentSnapshot;
+  activeDuels: TournamentSpectatorDuel[];
+  recentResults: TournamentSpectatorDuel[];
+};
+
 export type TournamentJoinResult =
   | { status: "matched"; match: TournamentMatchFound }
   | { status: "queued"; tournament: TournamentSnapshot; player: TournamentPlayer };
@@ -66,6 +79,40 @@ export class TournamentCoordinator {
       return null;
     }
     return this.buildMatch(playerId, duel);
+  }
+
+  getSpectatorState(limit = 8): TournamentSpectatorState {
+    const state = this.manager.exportState();
+    const players = new Map(state.players.map((player) => [player.id, player]));
+    const toSpectatorDuel = (duel: TournamentDuel): TournamentSpectatorDuel | null => {
+      const playerOne = players.get(duel.playerOneId);
+      const playerTwo = players.get(duel.playerTwoId);
+      if (!playerOne || !playerTwo) return null;
+      return {
+        duel: structuredClone(duel),
+        playerOne: structuredClone(playerOne),
+        playerTwo: structuredClone(playerTwo),
+        winner: duel.winnerId ? structuredClone(players.get(duel.winnerId) ?? null) : null,
+      };
+    };
+
+    const activeDuels = state.duels
+      .filter((duel) => !duel.winnerId)
+      .map(toSpectatorDuel)
+      .filter((duel): duel is TournamentSpectatorDuel => Boolean(duel));
+
+    const recentResults = state.duels
+      .filter((duel) => Boolean(duel.winnerId))
+      .sort((one, two) => (two.completedAt ?? 0) - (one.completedAt ?? 0))
+      .slice(0, Math.max(1, Math.min(limit, 20)))
+      .map(toSpectatorDuel)
+      .filter((duel): duel is TournamentSpectatorDuel => Boolean(duel));
+
+    return {
+      tournament: this.manager.getSnapshot(),
+      activeDuels,
+      recentResults,
+    };
   }
 
   simulateBackgroundBotDuels(maxDuels = Number.POSITIVE_INFINITY): BotSimulationResult {
