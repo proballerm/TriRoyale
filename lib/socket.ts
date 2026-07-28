@@ -1,5 +1,5 @@
 // lib/socket.ts
-import io, { Socket } from "socket.io-client";
+import io from "socket.io-client";
 
 let socket: ReturnType<typeof io> | null = null;
 
@@ -11,12 +11,22 @@ export function getSocket(): ReturnType<typeof io> {
 
     socket = io(url, {
       path: "/socket.io",
-      transports: ["websocket"],
+      transports: ["websocket", "polling"],
       autoConnect: false,
+      timeout: 10_000,
+      reconnection: true,
+      reconnectionAttempts: 8,
+      reconnectionDelay: 1_000,
+      reconnectionDelayMax: 5_000,
     });
 
-  socket.on("connect_error", (e: Error) => console.error("[socket] connect_error:", e?.message));
+    socket.on("connect_error", (error: Error) => {
+      console.warn(
+        `[socket] Failed to connect to ${url}/socket.io: ${error.message}. ` +
+          "Make sure the app is running with `npm run dev`, which starts the custom Socket.IO server.",
+      );
+    });
   }
+
   return socket;
 }
-
