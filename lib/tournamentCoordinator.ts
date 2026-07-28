@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import {
+  BotSimulationResult,
   TournamentDuel,
   TournamentManager,
   TournamentPlayer,
@@ -14,15 +15,8 @@ export type TournamentMatchFound = {
 };
 
 export type TournamentJoinResult =
-  | {
-      status: "matched";
-      match: TournamentMatchFound;
-    }
-  | {
-      status: "queued";
-      tournament: TournamentSnapshot;
-      player: TournamentPlayer;
-    };
+  | { status: "matched"; match: TournamentMatchFound }
+  | { status: "queued"; tournament: TournamentSnapshot; player: TournamentPlayer };
 
 export class TournamentCoordinator {
   private manager: TournamentManager;
@@ -45,33 +39,27 @@ export class TournamentCoordinator {
 
     const player = this.manager.addHuman(playerId, displayName);
     const duel = this.manager.createNextDuel();
-
     if (!duel || ![duel.playerOneId, duel.playerTwoId].includes(playerId)) {
-      return {
-        status: "queued",
-        tournament: this.manager.getSnapshot(),
-        player,
-      };
+      return { status: "queued", tournament: this.manager.getSnapshot(), player };
     }
 
     this.trackDuel(duel);
-    return {
-      status: "matched",
-      match: this.buildMatch(playerId, duel),
-    };
+    return { status: "matched", match: this.buildMatch(playerId, duel) };
   }
 
   getMatchForPlayer(playerId: string): TournamentMatchFound | null {
     const duelId = this.duelByPlayer.get(playerId);
     if (!duelId) return null;
-
     const duel = this.manager.getDuel(duelId);
     if (!duel || duel.winnerId) {
       this.duelByPlayer.delete(playerId);
       return null;
     }
-
     return this.buildMatch(playerId, duel);
+  }
+
+  simulateBackgroundBotDuels(maxDuels = Number.POSITIVE_INFINITY): BotSimulationResult {
+    return this.manager.simulateQueuedBotDuels(maxDuels);
   }
 
   completeMatch(duelId: string, winnerId: string): {
@@ -134,11 +122,8 @@ export class TournamentCoordinator {
 
   private buildMatch(playerId: string, duel: TournamentDuel): TournamentMatchFound {
     const player = this.requirePlayer(playerId);
-    const opponentId = duel.playerOneId === playerId
-      ? duel.playerTwoId
-      : duel.playerOneId;
+    const opponentId = duel.playerOneId === playerId ? duel.playerTwoId : duel.playerOneId;
     const opponent = this.requirePlayer(opponentId);
-
     return {
       tournament: this.manager.getSnapshot(),
       duel,
