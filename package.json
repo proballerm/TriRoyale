@@ -4,8 +4,9 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "next dev",
-    "server:dev": "tsx server-bootstrap.ts",
+    "dev": "tsx watch server-bootstrap.ts",
+    "dev:next-only": "next dev",
+    "server:dev": "tsx watch server-bootstrap.ts",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "node dist/server.js",
     "test": "tsx --test tests/**/*.test.ts",
