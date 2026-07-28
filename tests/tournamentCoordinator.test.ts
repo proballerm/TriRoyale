@@ -28,6 +28,23 @@ test("returns the same active duel when a player reconnects", () => {
   assert.equal(second.match.opponent.id, first.match.opponent.id);
 });
 
+test("exposes active pairings and recent results to spectators", () => {
+  const coordinator = new TournamentCoordinator("coordinator-spectator", 8, () => 0.5);
+  const joined = coordinator.join("user-1", "Ava K.");
+  assert.equal(joined.status, "matched");
+  if (joined.status !== "matched") return;
+
+  const liveFeed = coordinator.getSpectatorState();
+  assert.equal(liveFeed.activeDuels.length, 1);
+  assert.equal(liveFeed.activeDuels[0].playerOne.id === "user-1" || liveFeed.activeDuels[0].playerTwo.id === "user-1", true);
+  assert.equal(liveFeed.recentResults.length, 0);
+
+  coordinator.completeMatch(joined.match.duel.id, "user-1");
+  const completedFeed = coordinator.getSpectatorState();
+  assert.equal(completedFeed.recentResults[0].winner?.id, "user-1");
+  assert.equal(completedFeed.tournament.remainingPlayers, 4);
+});
+
 test("completes the live duel and simulates every other match in that round", () => {
   const coordinator = new TournamentCoordinator("coordinator-3", 8, () => 0.5);
   const joined = coordinator.join("user-1", "Ava K.");
