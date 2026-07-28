@@ -6,14 +6,14 @@ import { useEffect } from "react";
 
 const modes = [
   {
-    href: "/lobby",
-    eyebrow: "Live multiplayer",
+    href: "/tournament",
+    eyebrow: "1,000-player tournament",
     title: "Battle Royale",
-    description: "Outlast the lobby in a fast, high-pressure trivia showdown.",
+    description: "Win three-question duels, survive each cut, and keep requeueing until one champion remains.",
     icon: "⚔",
     accent: "from-cyan-400 to-blue-500",
     glow: "group-hover:shadow-[0_0_45px_rgba(34,211,238,0.35)]",
-    cta: "Enter matchmaking",
+    cta: "Join tournament",
   },
   {
     href: "/categories",
