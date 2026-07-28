@@ -36,6 +36,13 @@ export type TournamentSnapshot = {
   champion: TournamentPlayer | null;
 };
 
+export type BotSimulationResult = {
+  round: number;
+  duelsCompleted: number;
+  botsEliminated: number;
+  remainingPlayers: number;
+};
+
 const FIRST_NAMES = [
   "Aiden", "Amara", "Arjun", "Ava", "Caleb", "Camila", "Daniel", "Elena",
   "Ethan", "Grace", "Hana", "Isaac", "Jalen", "Kai", "Leah", "Liam",
@@ -77,7 +84,6 @@ export class TournamentManager {
     if (!Number.isInteger(startingPlayers) || startingPlayers < 2) {
       throw new Error("startingPlayers must be an integer of at least 2");
     }
-
     this.fillWithBots();
   }
 
@@ -92,9 +98,7 @@ export class TournamentManager {
     }
 
     const replaceableBotId = this.botQueue.shift();
-    if (!replaceableBotId) {
-      throw new Error("Tournament is full and has already started");
-    }
+    if (!replaceableBotId) throw new Error("Tournament is full and has already started");
     this.players.delete(replaceableBotId);
 
     const player: TournamentPlayer = {
@@ -113,29 +117,43 @@ export class TournamentManager {
   createNextDuel(): TournamentDuel | null {
     const firstId = this.takeNextQueuedPlayer();
     if (!firstId) return null;
-
     const secondId = this.takeNextQueuedPlayer(firstId);
     if (!secondId) {
       this.requeue(firstId);
       return null;
     }
+    return this.createDuel(firstId, secondId);
+  }
 
-    const first = this.requirePlayer(firstId);
-    const second = this.requirePlayer(secondId);
-    first.status = "matched";
-    second.status = "matched";
+  simulateQueuedBotDuels(maxDuels = Number.POSITIVE_INFINITY): BotSimulationResult {
+    if (maxDuels < 0) throw new Error("maxDuels cannot be negative");
+    const simulationRound = this.round;
+    let duelsCompleted = 0;
 
-    const duel: TournamentDuel = {
-      id: randomUUID(),
-      round: this.round,
-      playerOneId: firstId,
-      playerTwoId: secondId,
-      questionCount: QUESTIONS_PER_DUEL,
-      winnerId: null,
-      completedAt: null,
+    while (duelsCompleted < maxDuels) {
+      const eligible = this.botQueue.filter((id) => {
+        const player = this.players.get(id);
+        return player?.status === "queued" && player.round === simulationRound;
+      });
+      if (eligible.length < 2) break;
+
+      const oneId = eligible[0];
+      const twoId = eligible[1];
+      this.removeFromQueue(this.botQueue, oneId);
+      this.removeFromQueue(this.botQueue, twoId);
+
+      const duel = this.createDuel(oneId, twoId);
+      const winnerId = this.random() < 0.5 ? duel.playerOneId : duel.playerTwoId;
+      this.completeDuel(duel.id, winnerId);
+      duelsCompleted += 1;
+    }
+
+    return {
+      round: simulationRound,
+      duelsCompleted,
+      botsEliminated: duelsCompleted,
+      remainingPlayers: this.remainingPlayers,
     };
-    this.duels.set(duel.id, duel);
-    return structuredClone(duel);
   }
 
   completeDuel(duelId: string, winnerId: string): TournamentDuel {
@@ -149,12 +167,10 @@ export class TournamentManager {
     const loserId = duel.playerOneId === winnerId ? duel.playerTwoId : duel.playerOneId;
     const winner = this.requirePlayer(winnerId);
     const loser = this.requirePlayer(loserId);
-
     winner.wins += 1;
     winner.status = "queued";
-    winner.round = this.round + 1;
+    winner.round = duel.round + 1;
     loser.status = "eliminated";
-
     duel.winnerId = winnerId;
     duel.completedAt = Date.now();
 
@@ -167,7 +183,6 @@ export class TournamentManager {
       this.requeue(winnerId);
       this.advanceRoundWhenReady();
     }
-
     return structuredClone(duel);
   }
 
@@ -197,6 +212,24 @@ export class TournamentManager {
 
   get remainingPlayers(): number {
     return [...this.players.values()].filter((player) => player.status !== "eliminated").length;
+  }
+
+  private createDuel(firstId: string, secondId: string): TournamentDuel {
+    const first = this.requirePlayer(firstId);
+    const second = this.requirePlayer(secondId);
+    first.status = "matched";
+    second.status = "matched";
+    const duel: TournamentDuel = {
+      id: randomUUID(),
+      round: this.round,
+      playerOneId: firstId,
+      playerTwoId: secondId,
+      questionCount: QUESTIONS_PER_DUEL,
+      winnerId: null,
+      completedAt: null,
+    };
+    this.duels.set(duel.id, duel);
+    return structuredClone(duel);
   }
 
   private fillWithBots(): void {
@@ -230,7 +263,6 @@ export class TournamentManager {
   private takeNextQueuedPlayer(excludeId?: string): string | null {
     const humanIndex = this.humanQueue.findIndex((id) => id !== excludeId);
     if (humanIndex >= 0) return this.humanQueue.splice(humanIndex, 1)[0];
-
     const botIndex = this.botQueue.findIndex((id) => id !== excludeId);
     if (botIndex >= 0) return this.botQueue.splice(botIndex, 1)[0];
     return null;
@@ -241,6 +273,11 @@ export class TournamentManager {
     if (player.status === "eliminated" || player.status === "champion") return;
     const queue = player.kind === "human" ? this.humanQueue : this.botQueue;
     if (!queue.includes(playerId)) queue.push(playerId);
+  }
+
+  private removeFromQueue(queue: string[], playerId: string): void {
+    const index = queue.indexOf(playerId);
+    if (index >= 0) queue.splice(index, 1);
   }
 
   private advanceRoundWhenReady(): void {
