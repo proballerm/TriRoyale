@@ -1,8 +1,10 @@
 import type { Db } from "mongodb";
 import clientPromise from "./mongodb";
+import type { TournamentDuelEngineState } from "./tournamentDuelEngine";
 import type { TournamentManagerState, TournamentPlayer, TournamentSnapshot } from "./tournamentManager";
 
 const ACTIVE_COLLECTION = "active_tournaments";
+const ACTIVE_DUELS_COLLECTION = "active_tournament_duels";
 const HISTORY_COLLECTION = "tournament_history";
 const STATS_COLLECTION = "tournament_player_stats";
 const ACTIVE_KEY = "global";
@@ -23,6 +25,36 @@ export async function saveActiveTournament(state: TournamentManagerState): Promi
     },
     { upsert: true },
   );
+}
+
+export async function loadActiveDuelSessions(tournamentId: string): Promise<TournamentDuelEngineState[]> {
+  const client = await clientPromise;
+  return client.db().collection<{ tournamentId: string; duelId: string; state: TournamentDuelEngineState }>(ACTIVE_DUELS_COLLECTION)
+    .find({ tournamentId })
+    .map((document) => document.state)
+    .toArray();
+}
+
+export async function saveActiveDuelSession(tournamentId: string, state: TournamentDuelEngineState): Promise<void> {
+  const client = await clientPromise;
+  await client.db().collection(ACTIVE_DUELS_COLLECTION).updateOne(
+    { tournamentId, duelId: state.duelId },
+    {
+      $set: { tournamentId, duelId: state.duelId, state, updatedAt: new Date() },
+      $setOnInsert: { createdAt: new Date() },
+    },
+    { upsert: true },
+  );
+}
+
+export async function deleteActiveDuelSession(tournamentId: string, duelId: string): Promise<void> {
+  const client = await clientPromise;
+  await client.db().collection(ACTIVE_DUELS_COLLECTION).deleteOne({ tournamentId, duelId });
+}
+
+export async function clearActiveDuelSessions(tournamentId: string): Promise<void> {
+  const client = await clientPromise;
+  await client.db().collection(ACTIVE_DUELS_COLLECTION).deleteMany({ tournamentId });
 }
 
 export async function archiveCompletedTournament(
