@@ -77,6 +77,36 @@ test("eliminates the loser and automatically requeues the winner", () => {
   assert.equal(snapshot.queuedHumans, 1);
 });
 
+test("grants one bot a bye when an odd round has no live match left", () => {
+  const manager = new TournamentManager("tournament-bye", 5, () => 0.5);
+  manager.addHuman("user-1", "Kai R.");
+
+  const humanDuel = manager.createNextDuel();
+  assert.ok(humanDuel);
+  manager.completeDuel(humanDuel.id, "user-1");
+
+  const simulation = manager.simulateQueuedBotDuels();
+  const snapshot = manager.getSnapshot();
+
+  assert.equal(simulation.duelsCompleted, 1);
+  assert.equal(simulation.byesGranted, 1);
+  assert.equal(simulation.remainingPlayers, 3);
+  assert.equal(snapshot.round, 2);
+});
+
+test("does not grant a bye while a live duel from that round is active", () => {
+  const manager = new TournamentManager("tournament-active-bye", 5, () => 0.5);
+  manager.addHuman("user-1", "Mia L.");
+  const humanDuel = manager.createNextDuel();
+  assert.ok(humanDuel);
+
+  const simulation = manager.simulateQueuedBotDuels();
+
+  assert.equal(simulation.duelsCompleted, 1);
+  assert.equal(simulation.byesGranted, 0);
+  assert.equal(manager.getSnapshot().round, 1);
+});
+
 test("rejects a winner who was not part of the duel", () => {
   const manager = new TournamentManager("tournament-6", 4, () => 0.5);
   const duel = manager.createNextDuel();
