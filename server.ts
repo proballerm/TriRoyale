@@ -7,6 +7,7 @@ import "dotenv/config";
 import { launchBots } from "./lib/botManager";
 import { recordWin } from "./lib/recordWin";
 import { generateTriviaQuestion } from "./lib/triviaGenerator";
+import { registerTournamentSocketHandlers } from "./lib/registerTournamentSocketHandlers";
 
 const dev = process.env.NODE_ENV !== "production";
 const nextApp = next({ dev });
@@ -287,6 +288,7 @@ nextApp.prepare().then(() => {
 
   io.on("connection", (socket: Socket) => {
     metrics.totalConnections += 1;
+    registerTournamentSocketHandlers(io, socket);
 
     const joinRoom = async ({ username, category, matchId }: Record<string, unknown>) => {
       const safeUsername = sanitizeUsername(username);
