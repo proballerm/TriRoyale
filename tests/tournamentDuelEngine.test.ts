@@ -24,10 +24,8 @@ const questions = [
 test("awards correctness and speed points server-side", () => {
   const duel = new TournamentDuelEngine("duel-1", ["p1", "p2"], questions);
   duel.startQuestion(1_000);
-
   const fast = duel.submitAnswer("p1", "q1", "Mars", 2_000);
   const slow = duel.submitAnswer("p2", "q1", "Mars", 10_000);
-
   assert.equal(fast.correct, true);
   assert.equal(slow.correct, true);
   assert.ok(fast.points > slow.points);
@@ -37,10 +35,8 @@ test("awards correctness and speed points server-side", () => {
 test("locks each player to one answer per question", () => {
   const duel = new TournamentDuelEngine("duel-2", ["p1", "p2"], questions);
   duel.startQuestion(1_000);
-
   const first = duel.submitAnswer("p1", "q1", "Earth", 2_000);
   const replay = duel.submitAnswer("p1", "q1", "Mars", 2_500);
-
   assert.equal(first.accepted, true);
   assert.equal(first.correct, false);
   assert.equal(replay.accepted, false);
@@ -51,11 +47,7 @@ test("locks each player to one answer per question", () => {
 test("rejects mismatched question identifiers", () => {
   const duel = new TournamentDuelEngine("duel-3", ["p1", "p2"], questions);
   duel.startQuestion(1_000);
-
-  assert.throws(
-    () => duel.submitAnswer("p1", "wrong-question", "Mars", 2_000),
-    /active question/,
-  );
+  assert.throws(() => duel.submitAnswer("p1", "wrong-question", "Mars", 2_000), /active question/);
 });
 
 test("advances through all questions and selects the higher score", () => {
@@ -63,10 +55,8 @@ test("advances through all questions and selects the higher score", () => {
   duel.startQuestion(1_000);
   duel.submitAnswer("p1", "q1", "Mars", 2_000);
   duel.submitAnswer("p2", "q1", "Earth", 2_000);
-
   assert.equal(duel.isQuestionComplete(), true);
   assert.equal(duel.advanceQuestion()?.id, "q2");
-
   duel.startQuestion(20_000);
   duel.submitAnswer("p1", "q2", "Inca", 21_000);
   duel.submitAnswer("p2", "q2", "Inca", 24_000);
@@ -81,6 +71,25 @@ test("uses total response time as a tie breaker", () => {
   duel.submitAnswer("p1", "q1", "Earth", 2_000);
   duel.submitAnswer("p2", "q1", "Venus", 3_000);
   duel.advanceQuestion();
-
   assert.equal(duel.getWinnerId(), "p1");
+});
+
+test("restores an in-progress duel without losing timer, answers, or scores", () => {
+  const duel = new TournamentDuelEngine("duel-persisted", ["p1", "p2"], questions);
+  duel.startQuestion(10_000);
+  duel.submitAnswer("p1", "q1", "Mars", 12_000);
+
+  const restored = TournamentDuelEngine.restore(duel.exportState());
+
+  assert.equal(restored.getQuestionStartedAt(), 10_000);
+  assert.equal(restored.getQuestionDeadline(), 22_000);
+  assert.equal(restored.getCurrentQuestion().id, "q1");
+  assert.equal(restored.hasAnswered("p1"), true);
+  assert.equal(restored.hasAnswered("p2"), false);
+  assert.deepEqual(restored.getScores(), duel.getScores());
+
+  const replay = restored.submitAnswer("p1", "q1", "Earth", 13_000);
+  assert.equal(replay.accepted, false);
+  restored.submitAnswer("p2", "q1", "Mars", 14_000);
+  assert.equal(restored.isQuestionComplete(), true);
 });
