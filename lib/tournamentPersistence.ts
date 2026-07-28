@@ -1,3 +1,4 @@
+import type { Db } from "mongodb";
 import clientPromise from "./mongodb";
 import type { TournamentManagerState, TournamentPlayer, TournamentSnapshot } from "./tournamentManager";
 
@@ -17,12 +18,7 @@ export async function saveActiveTournament(state: TournamentManagerState): Promi
   await client.db().collection(ACTIVE_COLLECTION).updateOne(
     { key: ACTIVE_KEY },
     {
-      $set: {
-        key: ACTIVE_KEY,
-        tournamentId: state.tournamentId,
-        state,
-        updatedAt: new Date(),
-      },
+      $set: { key: ACTIVE_KEY, tournamentId: state.tournamentId, state, updatedAt: new Date() },
       $setOnInsert: { createdAt: new Date() },
     },
     { upsert: true },
@@ -38,7 +34,6 @@ export async function archiveCompletedTournament(
   const db = client.db();
   const humans = state.players.filter((player) => player.kind === "human");
   const completedDuels = state.duels.filter((duel) => duel.winnerId);
-  const completedAt = new Date();
 
   await db.collection(HISTORY_COLLECTION).updateOne(
     { tournamentId: state.tournamentId },
@@ -50,7 +45,7 @@ export async function archiveCompletedTournament(
         rounds: snapshot.round,
         humanParticipants: humans.map(({ id, displayName, wins }) => ({ id, displayName, wins })),
         totalMatches: completedDuels.length,
-        completedAt,
+        completedAt: new Date(),
       },
     },
     { upsert: true },
@@ -64,7 +59,7 @@ export async function clearActiveTournament(): Promise<void> {
   await client.db().collection(ACTIVE_COLLECTION).deleteOne({ key: ACTIVE_KEY });
 }
 
-async function updatePlayerStats(db: Awaited<ReturnType<typeof clientPromise.then>>["db"] extends never ? never : any, player: TournamentPlayer, champion: boolean): Promise<void> {
+async function updatePlayerStats(db: Db, player: TournamentPlayer, champion: boolean): Promise<void> {
   await db.collection(STATS_COLLECTION).updateOne(
     { playerId: player.id },
     {
