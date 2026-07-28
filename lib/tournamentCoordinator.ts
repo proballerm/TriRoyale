@@ -68,6 +68,7 @@ export class TournamentCoordinator {
     loser: TournamentPlayer;
     tournament: TournamentSnapshot;
     nextMatch: TournamentMatchFound | null;
+    background: BotSimulationResult;
   } {
     const before = this.manager.getDuel(duelId);
     if (!before) throw new Error("Duel not found");
@@ -82,6 +83,7 @@ export class TournamentCoordinator {
 
     const winner = this.requirePlayer(winnerId);
     const loser = this.requirePlayer(loserId);
+    const background = this.manager.simulateQueuedBotDuels();
     let nextMatch: TournamentMatchFound | null = null;
 
     if (winner.status !== "champion") {
@@ -98,6 +100,7 @@ export class TournamentCoordinator {
       loser,
       tournament: this.manager.getSnapshot(),
       nextMatch,
+      background,
     };
   }
 
