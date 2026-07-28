@@ -35,13 +35,21 @@ type Score = {
 };
 
 type DuelResult = {
+  duel: { id: string };
   winner: TournamentPlayer;
   loser: TournamentPlayer;
   scores: Score[];
   tournament: { remainingPlayers: number; round: number };
 };
 
+type MatchFound = {
+  duel: { id: string; round: number; questionCount: number };
+  player: TournamentPlayer;
+  opponent: TournamentPlayer;
+};
+
 const labels = ["A", "B", "C", "D"];
+const NEXT_DUEL_DELAY_SECONDS = 4;
 
 function TournamentDuelPageInner() {
   const { data: session, status } = useSession();
@@ -61,14 +69,18 @@ function TournamentDuelPageInner() {
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [answerLocked, setAnswerLocked] = useState(false);
   const [timeLeft, setTimeLeft] = useState(12);
-  const [roundResult, setRoundResult] = useState<{
-    correctAnswer: string;
-    explanation?: string;
-  } | null>(null);
+  const [roundResult, setRoundResult] = useState<{ correctAnswer: string; explanation?: string } | null>(null);
   const [duelResult, setDuelResult] = useState<DuelResult | null>(null);
+  const [nextMatch, setNextMatch] = useState<MatchFound | null>(null);
+  const [nextDuelCountdown, setNextDuelCountdown] = useState(NEXT_DUEL_DELAY_SECONDS);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const questionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    questionIdRef.current = question?.questionId ?? null;
+  }, [question?.questionId]);
 
   useEffect(() => {
     if (status !== "authenticated" || !duelId) return;
@@ -97,10 +109,7 @@ function TournamentDuelPageInner() {
       socket.emit("startTournamentDuel", { duelId });
     };
 
-    const handleReady = (payload: {
-      player: TournamentPlayer;
-      opponent: TournamentPlayer;
-    }) => {
+    const handleReady = (payload: { player: TournamentPlayer; opponent: TournamentPlayer }) => {
       setPlayer(payload.player);
       setOpponent(payload.opponent);
     };
@@ -115,11 +124,7 @@ function TournamentDuelPageInner() {
       startTimer(payload);
     };
 
-    const handleState = (payload: {
-      duelId: string;
-      question: DuelQuestion;
-      scores: Score[];
-    }) => {
+    const handleState = (payload: { duelId: string; question: DuelQuestion; scores: Score[] }) => {
       if (payload.duelId !== duelId) return;
       setQuestion(payload.question);
       setScores(payload.scores);
@@ -130,36 +135,30 @@ function TournamentDuelPageInner() {
       if (payload.duelId === duelId) setScores(payload.scores);
     };
 
-    const handleAnswerAccepted = (payload: {
-      duelId: string;
-      questionId: string;
-      accepted: boolean;
-    }) => {
-      if (payload.duelId === duelId && payload.questionId === question?.questionId) {
-        setAnswerLocked(payload.accepted || answerLocked);
+    const handleAnswerAccepted = (payload: { duelId: string; questionId: string; accepted: boolean }) => {
+      if (payload.duelId === duelId && payload.questionId === questionIdRef.current) {
+        setAnswerLocked((locked) => payload.accepted || locked);
       }
     };
 
-    const handleQuestionResult = (payload: {
-      duelId: string;
-      correctAnswer: string;
-      explanation?: string;
-      scores: Score[];
-    }) => {
+    const handleQuestionResult = (payload: { duelId: string; correctAnswer: string; explanation?: string; scores: Score[] }) => {
       if (payload.duelId !== duelId) return;
       stopTimer();
       setScores(payload.scores);
-      setRoundResult({
-        correctAnswer: payload.correctAnswer,
-        explanation: payload.explanation,
-      });
+      setRoundResult({ correctAnswer: payload.correctAnswer, explanation: payload.explanation });
     };
 
-    const handleCompleted = (payload: DuelResult & { duel: { id: string } }) => {
+    const handleCompleted = (payload: DuelResult) => {
       if (payload.duel.id !== duelId) return;
       stopTimer();
       setDuelResult(payload);
       setScores(payload.scores);
+    };
+
+    const handleNextMatch = (payload: MatchFound) => {
+      if (payload.duel.id === duelId || payload.player.id !== playerId) return;
+      setNextMatch(payload);
+      setNextDuelCountdown(NEXT_DUEL_DELAY_SECONDS);
     };
 
     const handleError = ({ message }: { message: string }) => setError(message);
@@ -174,6 +173,7 @@ function TournamentDuelPageInner() {
     socket.on("tournamentAnswerAccepted", handleAnswerAccepted);
     socket.on("tournamentQuestionResult", handleQuestionResult);
     socket.on("tournamentDuelCompleted", handleCompleted);
+    socket.on("tournamentMatchFound", handleNextMatch);
     socket.on("tournamentError", handleError);
 
     if (socket.connected) begin();
@@ -190,18 +190,29 @@ function TournamentDuelPageInner() {
       socket.off("tournamentAnswerAccepted", handleAnswerAccepted);
       socket.off("tournamentQuestionResult", handleQuestionResult);
       socket.off("tournamentDuelCompleted", handleCompleted);
+      socket.off("tournamentMatchFound", handleNextMatch);
       socket.off("tournamentError", handleError);
     };
-  }, [status, duelId, playerId, displayName, question?.questionId, answerLocked]);
+  }, [status, duelId, playerId, displayName]);
+
+  useEffect(() => {
+    if (!nextMatch || duelResult?.winner.id !== playerId) return;
+    const interval = setInterval(() => {
+      setNextDuelCountdown((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    const redirect = setTimeout(() => {
+      router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`);
+    }, NEXT_DUEL_DELAY_SECONDS * 1000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(redirect);
+    };
+  }, [nextMatch, duelResult?.winner.id, playerId, router]);
 
   const submitAnswer = (answer: string) => {
     if (!question || selectedAnswer || timeLeft <= 0 || roundResult || duelResult) return;
     setSelectedAnswer(answer);
-    getSocket().emit("submitTournamentAnswer", {
-      duelId,
-      questionId: question.questionId,
-      answer,
-    });
+    getSocket().emit("submitTournamentAnswer", { duelId, questionId: question.questionId, answer });
   };
 
   if (status === "loading") return <Loading label="Loading duel…" />;
@@ -225,19 +236,41 @@ function TournamentDuelPageInner() {
           <h1 className="mt-4 text-5xl font-black">{won ? "You advance" : "Eliminated"}</h1>
           <p className="mt-4 text-lg text-slate-300">
             {won
-              ? `${duelResult.tournament.remainingPlayers.toLocaleString()} players remain. Your next opponent is being prepared.`
+              ? `${duelResult.tournament.remainingPlayers.toLocaleString()} players remain.`
               : `${duelResult.winner.displayName} won this duel.`}
           </p>
           <div className="mx-auto mt-8 grid max-w-lg grid-cols-2 gap-4">
             <Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} />
             <Stat label="Correct" value={`${playerScore?.correctAnswers ?? 0} / 3`} />
           </div>
-          <button
-            onClick={() => router.push("/tournament")}
-            className="mt-8 rounded-2xl bg-cyan-400 px-8 py-4 text-lg font-black text-[#03101f] transition hover:bg-cyan-300"
-          >
-            {won ? "Find next opponent" : "View tournament"}
-          </button>
+
+          {won && nextMatch ? (
+            <div className="mt-8 rounded-3xl border border-cyan-300/20 bg-cyan-300/10 p-6">
+              <p className="text-xs font-black uppercase tracking-[0.22em] text-cyan-200">Next opponent found</p>
+              <h2 className="mt-3 text-2xl font-black">{nextMatch.opponent.displayName}</h2>
+              <p className="mt-2 text-sm text-slate-300">
+                Round {nextMatch.duel.round} begins in {nextDuelCountdown}…
+              </p>
+              <button
+                onClick={() => router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`)}
+                className="mt-5 rounded-2xl bg-cyan-400 px-7 py-3 font-black text-[#03101f] transition hover:bg-cyan-300"
+              >
+                Enter next duel now
+              </button>
+            </div>
+          ) : won ? (
+            <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" />
+              <p className="mt-4 font-bold text-cyan-100">Requeueing with the surviving field…</p>
+            </div>
+          ) : (
+            <button
+              onClick={() => router.push("/tournament")}
+              className="mt-8 rounded-2xl bg-cyan-400 px-8 py-4 text-lg font-black text-[#03101f] transition hover:bg-cyan-300"
+            >
+              View tournament
+            </button>
+          )}
         </section>
       </ArenaShell>
     );
@@ -262,9 +295,7 @@ function TournamentDuelPageInner() {
               <p className="text-xs font-black uppercase tracking-[0.24em] text-red-300">Duel error</p>
               <h2 className="mt-3 text-3xl font-black">Unable to continue</h2>
               <p className="mt-3 max-w-md text-slate-300">{error}</p>
-              <button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">
-                Return to tournament
-              </button>
+              <button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">Return to tournament</button>
             </div>
           ) : roundResult ? (
             <div className="flex min-h-[520px] flex-col justify-center text-center">
@@ -276,9 +307,7 @@ function TournamentDuelPageInner() {
           ) : question ? (
             <>
               <div className="flex items-center justify-between gap-4">
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-slate-300">
-                  Question {question.questionNumber} of {question.questionCount}
-                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-slate-300">Question {question.questionNumber} of {question.questionCount}</span>
                 <span className={`text-3xl font-black ${timeLeft <= 4 ? "text-red-300" : "text-cyan-300"}`}>{timeLeft}s</span>
               </div>
               <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
@@ -329,41 +358,20 @@ function TournamentDuelPageInner() {
 function ScoreRow({ name, score, correct, highlight = false }: { name: string; score: number; correct: number; highlight?: boolean }) {
   return (
     <div className={`mt-4 rounded-2xl border p-4 ${highlight ? "border-cyan-300/30 bg-cyan-300/10" : "border-white/10 bg-white/[0.035]"}`}>
-      <div className="flex items-center justify-between gap-3">
-        <p className="truncate font-black">{name}</p>
-        <p className="font-black text-cyan-200">{score.toLocaleString()}</p>
-      </div>
+      <div className="flex items-center justify-between gap-3"><p className="truncate font-black">{name}</p><p className="font-black text-cyan-200">{score.toLocaleString()}</p></div>
       <p className="mt-1 text-xs text-slate-400">{correct} correct</p>
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
-      <p className="text-2xl font-black">{value}</p>
-      <p className="mt-1 text-xs font-bold uppercase tracking-[0.15em] text-slate-500">{label}</p>
-    </div>
-  );
+  return <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5"><p className="text-2xl font-black">{value}</p><p className="mt-1 text-xs font-bold uppercase tracking-[0.15em] text-slate-500">{label}</p></div>;
 }
 
 function Loading({ label }: { label: string }) {
-  return (
-    <main className="arena-shell flex min-h-screen items-center justify-center text-white">
-      <div className="text-center">
-        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" />
-        <p className="mt-4 font-bold">{label}</p>
-      </div>
-    </main>
-  );
+  return <main className="arena-shell flex min-h-screen items-center justify-center text-white"><div className="text-center"><div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" /><p className="mt-4 font-bold">{label}</p></div></main>;
 }
 
 export default function TournamentDuelPage() {
-  return (
-    <SessionProvider>
-      <Suspense fallback={<Loading label="Loading duel…" />}>
-        <TournamentDuelPageInner />
-      </Suspense>
-    </SessionProvider>
-  );
+  return <SessionProvider><Suspense fallback={<Loading label="Loading duel…" />}><TournamentDuelPageInner /></Suspense></SessionProvider>;
 }
