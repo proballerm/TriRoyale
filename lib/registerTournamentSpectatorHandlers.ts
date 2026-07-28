@@ -1,5 +1,5 @@
 import type { Server, Socket } from "socket.io";
-import { getTournamentCoordinator } from "./registerTournamentSocketHandlers";
+import { getTournamentCoordinator } from "./tournamentSocketHandlers";
 
 const SPECTATOR_ROOM = "tournament-spectators";
 
