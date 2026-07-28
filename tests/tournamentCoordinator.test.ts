@@ -28,7 +28,7 @@ test("returns the same active duel when a player reconnects", () => {
   assert.equal(second.match.opponent.id, first.match.opponent.id);
 });
 
-test("completes a duel, eliminates the loser, and rematches the winner", () => {
+test("completes the live duel and simulates every other match in that round", () => {
   const coordinator = new TournamentCoordinator("coordinator-3", 8, () => 0.5);
   const joined = coordinator.join("user-1", "Ava K.");
   assert.equal(joined.status, "matched");
@@ -39,9 +39,27 @@ test("completes a duel, eliminates the loser, and rematches the winner", () => {
   assert.equal(completed.winner.id, "user-1");
   assert.equal(completed.winner.wins, 1);
   assert.equal(completed.loser.status, "eliminated");
-  assert.equal(completed.tournament.remainingPlayers, 7);
+  assert.equal(completed.background.duelsCompleted, 3);
+  assert.equal(completed.tournament.remainingPlayers, 4);
+  assert.equal(completed.tournament.round, 2);
   assert.ok(completed.nextMatch);
   assert.equal(completed.nextMatch?.player.id, "user-1");
+  assert.equal(completed.nextMatch?.duel.round, 2);
+});
+
+test("reduces a 1000-player field to 500 after the opening round", () => {
+  const coordinator = new TournamentCoordinator("coordinator-1000", 1000, () => 0.25);
+  const joined = coordinator.join("user-1", "Prabal M.");
+  assert.equal(joined.status, "matched");
+  if (joined.status !== "matched") return;
+
+  const completed = coordinator.completeMatch(joined.match.duel.id, "user-1");
+
+  assert.equal(completed.background.duelsCompleted, 499);
+  assert.equal(completed.background.botsEliminated, 499);
+  assert.equal(completed.tournament.remainingPlayers, 500);
+  assert.equal(completed.tournament.round, 2);
+  assert.equal(completed.nextMatch?.duel.round, 2);
 });
 
 test("does not expose completed duels as active matches", () => {
