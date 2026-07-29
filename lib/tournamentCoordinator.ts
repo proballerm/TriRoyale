@@ -56,16 +56,17 @@ export class TournamentCoordinator {
   }
 
   join(playerId: string, displayName: string): TournamentJoinResult {
-    const existingDuelId = this.duelByPlayer.get(playerId);
-    if (existingDuelId) {
-      const existingMatch = this.getMatchForPlayer(playerId);
-      if (existingMatch) return { status: "matched", match: existingMatch };
-    }
+    const existingMatch = this.getMatchForPlayer(playerId);
+    if (existingMatch) return { status: "matched", match: existingMatch };
+
+    const existedBeforeJoin = Boolean(this.manager.getPlayer(playerId));
     const player = this.manager.addHuman(playerId, displayName);
-    const duel = this.manager.createNextDuel();
-    if (!duel || ![duel.playerOneId, duel.playerTwoId].includes(playerId)) {
+    const duel = this.manager.createDuelForPlayer(playerId, existedBeforeJoin);
+
+    if (!duel) {
       return { status: "queued", tournament: this.manager.getSnapshot(), player };
     }
+
     this.trackDuel(duel);
     return { status: "matched", match: this.buildMatch(playerId, duel) };
   }
@@ -133,13 +134,13 @@ export class TournamentCoordinator {
     const loserId = completed.playerOneId === winnerId ? completed.playerTwoId : completed.playerOneId;
     this.duelByPlayer.delete(completed.playerOneId);
     this.duelByPlayer.delete(completed.playerTwoId);
-    const winner = this.requirePlayer(winnerId);
     const loser = this.requirePlayer(loserId);
     const background = this.manager.simulateQueuedBotDuels();
     let nextMatch: TournamentMatchFound | null = null;
+    const winner = this.requirePlayer(winnerId);
     if (winner.status !== "champion") {
-      const nextDuel = this.manager.createNextDuel();
-      if (nextDuel && [nextDuel.playerOneId, nextDuel.playerTwoId].includes(winnerId)) {
+      const nextDuel = this.manager.createDuelForPlayer(winnerId, true);
+      if (nextDuel) {
         this.trackDuel(nextDuel);
         nextMatch = this.buildMatch(winnerId, nextDuel);
       }
@@ -154,8 +155,13 @@ export class TournamentCoordinator {
     };
   }
 
-  getSnapshot(): TournamentSnapshot { return this.manager.getSnapshot(); }
-  getPlayer(playerId: string): TournamentPlayer | null { return this.manager.getPlayer(playerId); }
+  getSnapshot(): TournamentSnapshot {
+    return this.manager.getSnapshot();
+  }
+
+  getPlayer(playerId: string): TournamentPlayer | null {
+    return this.manager.getPlayer(playerId);
+  }
 
   reset(tournamentId = randomUUID()): TournamentSnapshot {
     this.manager = new TournamentManager(tournamentId, 1000, this.random);
@@ -169,16 +175,19 @@ export class TournamentCoordinator {
       if (!duel.winnerId) this.trackDuel(duel);
     }
   }
+
   private trackDuel(duel: TournamentDuel): void {
     this.duelByPlayer.set(duel.playerOneId, duel.id);
     this.duelByPlayer.set(duel.playerTwoId, duel.id);
   }
+
   private buildMatch(playerId: string, duel: TournamentDuel): TournamentMatchFound {
     const player = this.requirePlayer(playerId);
     const opponentId = duel.playerOneId === playerId ? duel.playerTwoId : duel.playerOneId;
     const opponent = this.requirePlayer(opponentId);
     return { tournament: this.manager.getSnapshot(), duel, player, opponent };
   }
+
   private requirePlayer(playerId: string): TournamentPlayer {
     const player = this.manager.getPlayer(playerId);
     if (!player) throw new Error("Player not found");
