@@ -8,7 +8,6 @@ import {
 const activeTournamentSocketByPlayer = new Map<string, string>();
 const protectedTournamentEvents = new Set([
   "joinTournament",
-  "getTournamentStatus",
   "startTournamentDuel",
   "submitTournamentAnswer",
 ]);
@@ -22,19 +21,28 @@ async function getVerifiedIdentity(socket: Socket): Promise<VerifiedTournamentId
   const secret = process.env.NEXTAUTH_SECRET;
   if (!secret) throw new Error("NEXTAUTH_SECRET is required for tournament socket authentication");
 
+  const forwardedProto = socket.request.headers["x-forwarded-proto"];
+  const protocol = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const secureCookie = protocol === "https" || process.env.NEXTAUTH_URL?.startsWith("https://") === true;
+
   const token = await getToken({
     req: socket.request as Parameters<typeof getToken>[0]["req"],
     secret,
+    secureCookie,
   });
 
-  const email = typeof token?.email === "string" ? token.email.trim().toLowerCase() : "";
-  if (!email) return null;
+  if (!token) return null;
 
-  const tokenName = typeof token?.name === "string" ? token.name.trim() : "";
-  const emailName = email.split("@")[0] || "Player";
-  const displayName = (tokenName || emailName).replace(/\s+/g, " ").slice(0, 40);
+  const email = typeof token.email === "string" ? token.email.trim().toLowerCase() : "";
+  const subject = typeof token.sub === "string" ? token.sub.trim() : "";
+  const playerId = (email || subject).slice(0, 100);
+  if (!playerId) return null;
 
-  return { playerId: email.slice(0, 100), displayName };
+  const tokenName = typeof token.name === "string" ? token.name.trim() : "";
+  const fallbackName = email ? email.split("@")[0] : "Player";
+  const displayName = (tokenName || fallbackName).replace(/\s+/g, " ").slice(0, 40);
+
+  return { playerId, displayName };
 }
 
 function claimPlayerSession(io: Server, socket: Socket, playerId: string): void {
@@ -63,7 +71,7 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
       const identity = await getVerifiedIdentity(socket);
       if (!identity) {
         socket.emit("tournamentError", {
-          message: "You must be signed in to join or play in the tournament.",
+          message: "Your login session was not available to the live tournament connection. Refresh the page and try again.",
         });
         return;
       }
@@ -93,7 +101,7 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
     } catch (error) {
       console.error("[Tournament] Socket authentication failed", error);
       socket.emit("tournamentError", {
-        message: "Tournament authentication failed. Please sign in again.",
+        message: "Tournament authentication failed. Refresh the page or sign in again.",
       });
     }
   });
