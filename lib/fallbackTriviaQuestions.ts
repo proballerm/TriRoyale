@@ -1,6 +1,8 @@
 import type { TriviaQuestion } from "./triviaQuality";
 
-const BANK: Record<string, TriviaQuestion[]> = {
+type FallbackTriviaQuestion = Omit<TriviaQuestion, "category">;
+
+const BANK: Record<string, FallbackTriviaQuestion[]> = {
   Sports: [
     { question: "How many points is a touchdown worth before the extra-point attempt?", answers: ["3", "6", "7", "8"], correct: "B", difficulty: "easy", explanation: "A touchdown is worth six points before any conversion attempt." },
     { question: "In basketball, how many players from one team are on the court at once?", answers: ["4", "5", "6", "7"], correct: "B", difficulty: "easy", explanation: "A basketball team fields five players on the court." },
@@ -46,5 +48,5 @@ export function getFallbackTriviaQuestion(category: string): TriviaQuestion {
   const cursor = cursors.get(category) ?? Math.floor(Math.random() * questions.length);
   const question = questions[cursor % questions.length];
   cursors.set(category, (cursor + 1) % questions.length);
-  return structuredClone(question);
+  return { ...structuredClone(question), category };
 }
