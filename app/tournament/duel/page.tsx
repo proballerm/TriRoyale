@@ -50,9 +50,14 @@ type MatchFound = {
   opponent: TournamentPlayer;
 };
 
+type FeedItem = { id: string; text: string; emphasis?: string };
+
 const labels = ["A", "B", "C", "D"];
 const RESULT_REVEAL_DELAY_MS = 900;
 const NEXT_DUEL_DELAY_SECONDS = 7;
+const QUESTION_INTRO_TICKS = 3;
+const FIELD_STEPS = [1000, 500, 250, 125, 63, 32, 16, 8, 4, 2, 1];
+const FEED_NAMES = ["Nova", "Marcus", "Avery", "Kai", "Maya", "Jordan", "Riley", "Zane"];
 
 function TournamentDuelPageInner() {
   const { data: session, status } = useSession();
@@ -80,12 +85,41 @@ function TournamentDuelPageInner() {
   const [nextDuelCountdown, setNextDuelCountdown] = useState(NEXT_DUEL_DELAY_SECONDS);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [introTick, setIntroTick] = useState(0);
+  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [scoreFlash, setScoreFlash] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const questionIdRef = useRef<string | null>(null);
+  const previousScoresRef = useRef<Score[]>([]);
 
   useEffect(() => {
     questionIdRef.current = question?.questionId ?? null;
   }, [question?.questionId]);
+
+  useEffect(() => {
+    if (introTick <= 0) return;
+    const timer = window.setTimeout(() => setIntroTick((tick) => tick - 1), 550);
+    return () => window.clearTimeout(timer);
+  }, [introTick]);
+
+  useEffect(() => {
+    if (!question || duelResult) return;
+    const timer = window.setInterval(() => {
+      const name = FEED_NAMES[Math.floor(Math.random() * FEED_NAMES.length)];
+      const remaining = Math.max(2, FIELD_STEPS[Math.min(FIELD_STEPS.length - 1, player?.round ?? 1)] ?? 500);
+      const messages = [
+        `${name} survived a sudden-death duel`,
+        `${Math.max(1, Math.floor(Math.random() * 9) + 1)} perfect answers recorded`,
+        `The field is collapsing toward ${remaining.toLocaleString()}`,
+        `${name} eliminated a higher seed`,
+      ];
+      setFeed((items) => [
+        { id: crypto.randomUUID(), text: messages[Math.floor(Math.random() * messages.length)], emphasis: "LIVE" },
+        ...items,
+      ].slice(0, 4));
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [question, duelResult, player?.round]);
 
   useEffect(() => {
     if (status !== "authenticated" || !duelId) return;
@@ -116,6 +150,7 @@ function TournamentDuelPageInner() {
     const handleReady = (payload: { player: TournamentPlayer; opponent: TournamentPlayer }) => {
       setPlayer(payload.player);
       setOpponent(payload.opponent);
+      setFeed([{ id: crypto.randomUUID(), text: `${payload.opponent.displayName} entered the arena`, emphasis: "RIVAL LOCKED" }]);
     };
 
     const handleQuestion = (payload: DuelQuestion) => {
@@ -125,19 +160,36 @@ function TournamentDuelPageInner() {
       setAnswerLocked(false);
       setRoundResult(null);
       setError(null);
+      setIntroTick(QUESTION_INTRO_TICKS);
+      setScoreFlash(payload.questionNumber === payload.questionCount ? "FINAL QUESTION · 2× POINTS" : `QUESTION ${payload.questionNumber}`);
+      window.setTimeout(() => setScoreFlash(null), 2200);
       startTimer(payload);
+    };
+
+    const applyScores = (nextScores: Score[]) => {
+      const previousPlayer = previousScoresRef.current.find((score) => score.playerId === playerId)?.score ?? 0;
+      const previousOpponent = previousScoresRef.current.find((score) => score.playerId !== playerId)?.score ?? 0;
+      const nextPlayer = nextScores.find((score) => score.playerId === playerId)?.score ?? 0;
+      const nextOpponent = nextScores.find((score) => score.playerId !== playerId)?.score ?? 0;
+      previousScoresRef.current = nextScores;
+      setScores(nextScores);
+      if (nextPlayer !== previousPlayer || nextOpponent !== previousOpponent) {
+        const message = nextPlayer === nextOpponent ? "DEAD EVEN" : nextPlayer > nextOpponent ? "YOU TAKE THE LEAD" : "RIVAL TAKES THE LEAD";
+        setScoreFlash(message);
+        window.setTimeout(() => setScoreFlash(null), 1800);
+      }
     };
 
     const handleState = (payload: { duelId: string; question: DuelQuestion; scores: Score[]; answered?: boolean }) => {
       if (payload.duelId !== duelId) return;
       setQuestion(payload.question);
-      setScores(payload.scores);
+      applyScores(payload.scores);
       setAnswerLocked(Boolean(payload.answered));
       startTimer(payload.question);
     };
 
     const handleScore = (payload: { duelId: string; scores: Score[] }) => {
-      if (payload.duelId === duelId) setScores(payload.scores);
+      if (payload.duelId === duelId) applyScores(payload.scores);
     };
 
     const handleAnswerAccepted = (payload: { duelId: string; questionId: string; accepted: boolean }) => {
@@ -149,7 +201,7 @@ function TournamentDuelPageInner() {
     const handleQuestionResult = (payload: { duelId: string; correctAnswer: string; explanation?: string; scores: Score[] }) => {
       if (payload.duelId !== duelId) return;
       stopTimer();
-      setScores(payload.scores);
+      applyScores(payload.scores);
       setRoundResult({ correctAnswer: payload.correctAnswer, explanation: payload.explanation });
     };
 
@@ -208,9 +260,8 @@ function TournamentDuelPageInner() {
     const start = Math.max(target, Math.min(1000, target * 2));
     setDisplayedRemaining(start);
     const startedAt = Date.now();
-    const duration = 1000;
     const interval = window.setInterval(() => {
-      const ratio = Math.min(1, (Date.now() - startedAt) / duration);
+      const ratio = Math.min(1, (Date.now() - startedAt) / 1000);
       const eased = 1 - Math.pow(1 - ratio, 3);
       setDisplayedRemaining(Math.round(start + (target - start) * eased));
       if (ratio >= 1) window.clearInterval(interval);
@@ -220,12 +271,8 @@ function TournamentDuelPageInner() {
 
   useEffect(() => {
     if (!nextMatch || duelResult?.winner.id !== playerId || !showFinalResult) return;
-    const interval = window.setInterval(() => {
-      setNextDuelCountdown((seconds) => Math.max(0, seconds - 1));
-    }, 1000);
-    const redirect = window.setTimeout(() => {
-      router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`);
-    }, NEXT_DUEL_DELAY_SECONDS * 1000);
+    const interval = window.setInterval(() => setNextDuelCountdown((seconds) => Math.max(0, seconds - 1)), 1000);
+    const redirect = window.setTimeout(() => router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`), NEXT_DUEL_DELAY_SECONDS * 1000);
     return () => {
       window.clearInterval(interval);
       window.clearTimeout(redirect);
@@ -233,7 +280,7 @@ function TournamentDuelPageInner() {
   }, [nextMatch, duelResult?.winner.id, playerId, router, showFinalResult]);
 
   const submitAnswer = (answer: string) => {
-    if (!question || selectedAnswer || timeLeft <= 0 || roundResult || duelResult) return;
+    if (!question || introTick > 0 || selectedAnswer || timeLeft <= 0 || roundResult || duelResult) return;
     setSelectedAnswer(answer);
     getSocket().emit("submitTournamentAnswer", { duelId, questionId: question.questionId, answer });
   };
@@ -247,11 +294,15 @@ function TournamentDuelPageInner() {
   const playerScore = scores.find((score) => score.playerId === playerId);
   const opponentScore = scores.find((score) => score.playerId !== playerId);
   const progress = question ? (timeLeft / question.timeLimit) * 100 : 0;
+  const scoreGap = (playerScore?.score ?? 0) - (opponentScore?.score ?? 0);
+  const momentum = scoreGap === 0 ? "Dead even" : scoreGap > 0 ? `Leading by ${scoreGap.toLocaleString()}` : `Down by ${Math.abs(scoreGap).toLocaleString()}`;
+  const currentRound = player?.round ?? 1;
+  const currentFieldIndex = Math.min(FIELD_STEPS.length - 1, Math.max(0, currentRound - 1));
+  const currentField = FIELD_STEPS[currentFieldIndex];
 
   if (duelResult) {
     const won = duelResult.winner.id === playerId;
     const remaining = duelResult.tournament.remainingPlayers;
-    const eliminatedThisRound = Math.max(0, remaining);
     const outlasted = Math.max(0, 1000 - remaining);
     const placement = won ? remaining : Math.min(1000, remaining + 1);
     const accuracy = Math.round(((playerScore?.correctAnswers ?? 0) / 3) * 100);
@@ -260,186 +311,56 @@ function TournamentDuelPageInner() {
     const perfect = (playerScore?.correctAnswers ?? 0) === 3;
 
     if (!showFinalResult) {
-      return (
-        <ArenaShell>
-          <section className={`${arenaPanelClass} mx-auto flex min-h-[560px] max-w-3xl flex-col items-center justify-center p-8 text-center sm:p-12`}>
-            <div className="h-20 w-20 animate-pulse rounded-full border border-white/10 bg-white/5" />
-            <p className="mt-6 text-xs font-black uppercase tracking-[0.32em] text-slate-400">Final scores locked</p>
-            <h1 className="mt-3 text-4xl font-black">Calculating result…</h1>
-          </section>
-        </ArenaShell>
-      );
+      return <ArenaShell><section className={`${arenaPanelClass} mx-auto flex min-h-[560px] max-w-3xl flex-col items-center justify-center p-8 text-center sm:p-12`}><div className="h-20 w-20 animate-pulse rounded-full border border-white/10 bg-white/5" /><p className="mt-6 text-xs font-black uppercase tracking-[0.32em] text-slate-400">Final scores locked</p><h1 className="mt-3 text-4xl font-black">Calculating result…</h1></section></ArenaShell>;
     }
 
     return (
       <ArenaShell>
         <section className={`${arenaPanelClass} mx-auto max-w-4xl overflow-hidden p-6 text-center sm:p-10`}>
           <div className={`rounded-3xl border p-7 sm:p-10 ${won ? "border-emerald-300/25 bg-emerald-300/[0.07]" : "border-red-300/25 bg-red-300/[0.06]"}`}>
-            <p className={`text-xs font-black uppercase tracking-[0.32em] ${won ? "text-emerald-300" : "text-red-300"}`}>
-              {won ? "VICTORY — YOU SURVIVED" : "ELIMINATED"}
-            </p>
+            <p className={`text-xs font-black uppercase tracking-[0.32em] ${won ? "text-emerald-300" : "text-red-300"}`}>{won ? "VICTORY — YOU SURVIVED" : "ELIMINATED"}</p>
             <h1 className="mt-4 text-5xl font-black sm:text-6xl">{won ? `Top ${remaining.toLocaleString()}` : `#${placement.toLocaleString()}`}</h1>
-            <p className="mt-4 text-lg text-slate-300">
-              {won
-                ? `You defeated ${duelResult.loser.displayName} and advanced to Round ${duelResult.tournament.round}.`
-                : `${duelResult.winner.displayName} ended your run.`}
-            </p>
-
-            {won && (
-              <div className="mx-auto mt-8 max-w-xl rounded-3xl border border-white/10 bg-black/20 p-6">
-                <p className="text-xs font-black uppercase tracking-[0.24em] text-slate-500">Survivors</p>
-                <div className="mt-3 flex items-center justify-center gap-5">
-                  <span className="text-2xl font-black text-slate-600">{Math.min(1000, remaining * 2).toLocaleString()}</span>
-                  <span className="text-2xl text-cyan-300">→</span>
-                  <span className="text-5xl font-black text-white">{(displayedRemaining ?? remaining).toLocaleString()}</span>
-                </div>
-                <p className="mt-3 text-sm font-bold text-cyan-200">You have outlasted {outlasted.toLocaleString()} competitors.</p>
-              </div>
-            )}
+            <p className="mt-4 text-lg text-slate-300">{won ? `You defeated ${duelResult.loser.displayName} and advanced.` : `${duelResult.winner.displayName} ended your run.`}</p>
+            {won && <div className="mx-auto mt-8 max-w-xl rounded-3xl border border-white/10 bg-black/20 p-6"><p className="text-xs font-black uppercase tracking-[0.24em] text-slate-500">Survivors</p><div className="mt-3 flex items-center justify-center gap-5"><span className="text-2xl font-black text-slate-600">{Math.min(1000, remaining * 2).toLocaleString()}</span><span className="text-2xl text-cyan-300">→</span><span className="text-5xl font-black text-white">{(displayedRemaining ?? remaining).toLocaleString()}</span></div><p className="mt-3 text-sm font-bold text-cyan-200">You have outlasted {outlasted.toLocaleString()} competitors.</p></div>}
           </div>
-
-          <div className="mt-6 grid gap-3 sm:grid-cols-4">
-            <Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} />
-            <Stat label="Accuracy" value={`${accuracy}%`} />
-            <Stat label="Correct" value={`${playerScore?.correctAnswers ?? 0} / 3`} />
-            <Stat label={won ? "Players left" : "Placement"} value={won ? remaining.toLocaleString() : `#${placement}`} />
-          </div>
-
-          {(perfect || closeFinish || won) && (
-            <div className="mt-5 flex flex-wrap justify-center gap-2">
-              {perfect && <MomentBadge text="PERFECT ROUND" />}
-              {closeFinish && <MomentBadge text={`CLUTCH FINISH · ${margin} PTS`} />}
-              {won && <MomentBadge text={`+1 DUEL WIN`} />}
-              {won && eliminatedThisRound > 0 && <MomentBadge text={`TOP ${Math.max(1, Math.ceil((remaining / 1000) * 100))}%`} />}
-            </div>
-          )}
-
-          {won && nextMatch ? (
-            <div className="mt-8 rounded-3xl border border-cyan-300/20 bg-cyan-300/[0.07] p-6 sm:p-8">
-              <p className="text-xs font-black uppercase tracking-[0.25em] text-cyan-200">Next rival identified</p>
-              <div className="mx-auto mt-5 grid max-w-xl items-center gap-4 sm:grid-cols-[1fr_auto_1fr]">
-                <MiniPlayer name={displayName} label="You" />
-                <div className="text-2xl font-black text-white/30">VS</div>
-                <MiniPlayer name={nextMatch.opponent.displayName} label={nextMatch.opponent.kind === "bot" ? "AI rival" : "Live rival"} />
-              </div>
-              <p className="mt-5 text-sm text-slate-300">Round {nextMatch.duel.round} begins in <span className="font-black text-white">{nextDuelCountdown}</span>…</p>
-              <button
-                onClick={() => router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`)}
-                className="mt-5 rounded-2xl bg-cyan-400 px-8 py-4 font-black text-[#03101f] transition hover:bg-cyan-300"
-              >
-                Face next rival now
-              </button>
-            </div>
-          ) : won ? (
-            <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.035] p-6">
-              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" />
-              <p className="mt-4 font-bold text-cyan-100">The bracket is collapsing. Finding your next rival…</p>
-            </div>
-          ) : (
-            <div className="mt-8 grid gap-3 sm:grid-cols-2">
-              <button onClick={() => router.push("/tournament")} className="rounded-2xl bg-cyan-400 px-8 py-4 text-lg font-black text-[#03101f] transition hover:bg-cyan-300">Run it back</button>
-              <button onClick={() => router.push("/")} className="rounded-2xl border border-white/10 bg-white/5 px-8 py-4 text-lg font-black text-white transition hover:bg-white/10">Back home</button>
-            </div>
-          )}
+          <div className="mt-6 grid gap-3 sm:grid-cols-4"><Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} /><Stat label="Accuracy" value={`${accuracy}%`} /><Stat label="Correct" value={`${playerScore?.correctAnswers ?? 0} / 3`} /><Stat label={won ? "Players left" : "Placement"} value={won ? remaining.toLocaleString() : `#${placement}`} /></div>
+          {(perfect || closeFinish || won) && <div className="mt-5 flex flex-wrap justify-center gap-2">{perfect && <MomentBadge text="PERFECT ROUND" />}{closeFinish && <MomentBadge text={`CLUTCH FINISH · ${margin} PTS`} />}{won && <MomentBadge text="+1 DUEL WIN" />}</div>}
+          {won && nextMatch ? <div className="mt-8 rounded-3xl border border-cyan-300/20 bg-cyan-300/[0.07] p-6 sm:p-8"><p className="text-xs font-black uppercase tracking-[0.25em] text-cyan-200">Next rival identified</p><div className="mx-auto mt-5 grid max-w-xl items-center gap-4 sm:grid-cols-[1fr_auto_1fr]"><MiniPlayer name={displayName} label="You" /><div className="text-2xl font-black text-white/30">VS</div><MiniPlayer name={nextMatch.opponent.displayName} label={nextMatch.opponent.kind === "bot" ? "AI rival" : "Live rival"} /></div><p className="mt-5 text-sm text-slate-300">Round {nextMatch.duel.round} begins in <span className="font-black text-white">{nextDuelCountdown}</span>…</p><button onClick={() => router.replace(`/tournament/duel?duelId=${encodeURIComponent(nextMatch.duel.id)}`)} className="mt-5 rounded-2xl bg-cyan-400 px-8 py-4 font-black text-[#03101f] transition hover:bg-cyan-300">Face next rival now</button></div> : won ? <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.035] p-6"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" /><p className="mt-4 font-bold text-cyan-100">The bracket is collapsing. Finding your next rival…</p></div> : <div className="mt-8 grid gap-3 sm:grid-cols-2"><button onClick={() => router.push("/tournament")} className="rounded-2xl bg-cyan-400 px-8 py-4 text-lg font-black text-[#03101f] transition hover:bg-cyan-300">Run it back</button><button onClick={() => router.push("/")} className="rounded-2xl border border-white/10 bg-white/5 px-8 py-4 text-lg font-black text-white transition hover:bg-white/10">Back home</button></div>}
         </section>
       </ArenaShell>
     );
   }
 
   const answeredCorrectly = roundResult && selectedAnswer === roundResult.correctAnswer;
+  const isFinal = question?.questionNumber === question?.questionCount;
 
   return (
     <ArenaShell>
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#081426]/85 px-5 py-4 backdrop-blur-xl">
-        <div>
-          <p className="text-xs font-black uppercase tracking-[0.28em] text-cyan-300">Tournament duel</p>
-          <h1 className="mt-1 text-2xl font-black">Round {player?.round ?? 1}</h1>
-        </div>
-        <span className={`rounded-full border px-3 py-2 text-sm font-bold ${connected ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200"}`}>
-          {connected ? "Live" : "Reconnecting"}
-        </span>
-      </header>
+      {scoreFlash && <div className="pointer-events-none fixed inset-x-0 top-24 z-50 mx-auto w-fit rounded-full border border-cyan-300/30 bg-[#071324]/95 px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-cyan-100 shadow-2xl">{scoreFlash}</div>}
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#081426]/85 px-5 py-4 backdrop-blur-xl"><div><p className="text-xs font-black uppercase tracking-[0.28em] text-cyan-300">Round of {currentField.toLocaleString()}</p><h1 className="mt-1 text-2xl font-black">{displayName} vs {opponent?.displayName || "Rival"}</h1></div><span className={`rounded-full border px-3 py-2 text-sm font-bold ${connected ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200"}`}>{connected ? "Live" : "Reconnecting"}</span></header>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-        <section className={`${arenaPanelClass} p-6 sm:p-8`}>
-          {error ? (
-            <div className="flex min-h-[520px] flex-col items-center justify-center text-center">
-              <p className="text-xs font-black uppercase tracking-[0.24em] text-red-300">Duel error</p>
-              <h2 className="mt-3 text-3xl font-black">Unable to continue</h2>
-              <p className="mt-3 max-w-md text-slate-300">{error}</p>
-              <button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">Start a new tournament</button>
-            </div>
-          ) : roundResult ? (
-            <div className="flex min-h-[520px] flex-col justify-center text-center">
-              <p className={`text-xs font-black uppercase tracking-[0.28em] ${answeredCorrectly ? "text-emerald-300" : "text-red-300"}`}>
-                {answeredCorrectly ? "CORRECT" : selectedAnswer ? "NOT QUITE" : "TIME EXPIRED"}
-              </p>
-              <h2 className="mt-4 text-4xl font-black">{roundResult.correctAnswer}</h2>
-              {roundResult.explanation && <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-slate-300">{roundResult.explanation}</p>}
-              <div className="mx-auto mt-7 flex gap-3">
-                <Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} />
-                <Stat label="Rival score" value={(opponentScore?.score ?? 0).toLocaleString()} />
-              </div>
-              <p className="mt-8 font-bold text-cyan-200">Next question incoming…</p>
-            </div>
-          ) : question ? (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-slate-300">Question {question.questionNumber} of {question.questionCount}</span>
-                <span className={`text-3xl font-black ${timeLeft <= 4 ? "text-red-300" : "text-cyan-300"}`}>{timeLeft}s</span>
-              </div>
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
-                <div className={`h-full transition-[width] ${timeLeft <= 4 ? "bg-red-400" : "bg-cyan-400"}`} style={{ width: `${progress}%` }} />
-              </div>
-              <p className="mt-8 text-xs font-black uppercase tracking-[0.24em] text-white/40">{question.category}</p>
-              <h2 className="mt-3 text-3xl font-black leading-tight sm:text-4xl">{question.question}</h2>
-              <div className="mt-8 grid gap-4 sm:grid-cols-2">
-                {question.answers.map((answer, index) => (
-                  <button
-                    key={answer}
-                    onClick={() => submitAnswer(answer)}
-                    disabled={!!selectedAnswer || timeLeft <= 0}
-                    className={`flex min-h-24 items-center gap-4 rounded-2xl border p-5 text-left font-bold transition ${selectedAnswer === answer ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 bg-white/[0.035] hover:border-white/25 hover:bg-white/[0.07] disabled:opacity-60"}`}
-                  >
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-cyan-200">{labels[index]}</span>
-                    <span>{answer}</span>
-                  </button>
-                ))}
-              </div>
-              {selectedAnswer && <p className="mt-5 text-center text-sm font-bold text-cyan-200">{answerLocked ? "Answer locked — waiting on your rival" : "Locking answer…"}</p>}
-            </>
-          ) : (
-            <div className="flex min-h-[520px] flex-col items-center justify-center text-center">
-              <div className="h-14 w-14 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" />
-              <h2 className="mt-6 text-2xl font-black">Preparing the arena</h2>
-              <p className="mt-2 text-slate-400">Loading three unique questions for both competitors.</p>
-            </div>
-          )}
+      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <section className={`${arenaPanelClass} relative overflow-hidden p-6 sm:p-8`}>
+          {introTick > 0 && question && <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#06101e]/95 text-center backdrop-blur-sm"><p className="text-xs font-black uppercase tracking-[0.34em] text-cyan-300">{isFinal ? "FINAL QUESTION" : `QUESTION ${question.questionNumber}`}</p><h2 className="mt-4 text-5xl font-black">{isFinal ? "2× POINTS" : introTick}</h2><p className="mt-4 text-slate-300">{isFinal ? "One answer can change everything." : momentum}</p></div>}
+          {error ? <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><p className="text-xs font-black uppercase tracking-[0.24em] text-red-300">Duel error</p><h2 className="mt-3 text-3xl font-black">Unable to continue</h2><p className="mt-3 max-w-md text-slate-300">{error}</p><button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">Start a new tournament</button></div> : roundResult ? <div className="flex min-h-[520px] flex-col justify-center text-center"><p className={`text-xs font-black uppercase tracking-[0.28em] ${answeredCorrectly ? "text-emerald-300" : "text-red-300"}`}>{answeredCorrectly ? "CORRECT" : selectedAnswer ? "NOT QUITE" : "TIME EXPIRED"}</p><h2 className="mt-4 text-4xl font-black">{roundResult.correctAnswer}</h2>{roundResult.explanation && <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-slate-300">{roundResult.explanation}</p>}<div className="mx-auto mt-7 flex gap-3"><Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} /><Stat label="Rival score" value={(opponentScore?.score ?? 0).toLocaleString()} /></div><p className="mt-8 font-bold text-cyan-200">{momentum} · Next question incoming…</p></div> : question ? <><div className="flex items-center justify-between gap-4"><span className={`rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.16em] ${isFinal ? "border-amber-300/30 bg-amber-300/10 text-amber-200" : "border-white/10 bg-white/5 text-slate-300"}`}>{isFinal ? "Final question · 2×" : `Question ${question.questionNumber} of ${question.questionCount}`}</span><span className={`text-3xl font-black ${timeLeft <= 4 ? "text-red-300" : "text-cyan-300"}`}>{timeLeft}s</span></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className={`h-full transition-[width] ${timeLeft <= 4 ? "bg-red-400" : isFinal ? "bg-amber-300" : "bg-cyan-400"}`} style={{ width: `${progress}%` }} /></div><div className="mt-5 flex items-center justify-between gap-3 text-sm"><span className="font-bold text-slate-400">{momentum}</span><span className="font-bold text-slate-400">{selectedAnswer ? "Rival is thinking…" : "Both players active"}</span></div><p className="mt-8 text-xs font-black uppercase tracking-[0.24em] text-white/40">{question.category}</p><h2 className="mt-3 text-3xl font-black leading-tight sm:text-4xl">{question.question}</h2><div className="mt-8 grid gap-4 sm:grid-cols-2">{question.answers.map((answer, index) => <button key={answer} onClick={() => submitAnswer(answer)} disabled={introTick > 0 || !!selectedAnswer || timeLeft <= 0} className={`flex min-h-24 items-center gap-4 rounded-2xl border p-5 text-left font-bold transition ${selectedAnswer === answer ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 bg-white/[0.035] hover:border-white/25 hover:bg-white/[0.07] disabled:opacity-60"}`}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-cyan-200">{labels[index]}</span><span>{answer}</span></button>)}</div>{selectedAnswer && <p className="mt-5 text-center text-sm font-bold text-cyan-200">{answerLocked ? "Answer locked — waiting on your rival" : "Locking answer…"}</p>}</> : <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><div className="h-14 w-14 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" /><h2 className="mt-6 text-2xl font-black">Preparing the arena</h2><p className="mt-2 text-slate-400">Loading three unique questions for both competitors.</p></div>}
         </section>
 
         <aside className="space-y-4">
-          <div className={`${arenaPanelClass} p-5`}>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Live duel</p>
-            <ScoreRow name={displayName} score={playerScore?.score ?? 0} correct={playerScore?.correctAnswers ?? 0} highlight />
-            <ScoreRow name={opponent?.displayName || "Opponent"} score={opponentScore?.score ?? 0} correct={opponentScore?.correctAnswers ?? 0} />
-          </div>
-          <div className={`${arenaPanelClass} p-5`}>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Stakes</p>
-            <p className="mt-4 text-sm leading-6 text-slate-300">Three questions decide who survives. Correct answers earn 1,000 points plus a speed bonus. Every point can decide your run.</p>
-          </div>
+          <div className={`${arenaPanelClass} p-5`}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Live duel</p><span className="text-xs font-black uppercase tracking-[0.16em] text-cyan-300">{momentum}</span></div><ScoreRow name={displayName} score={playerScore?.score ?? 0} correct={playerScore?.correctAnswers ?? 0} highlight /><ScoreRow name={opponent?.displayName || "Opponent"} score={opponentScore?.score ?? 0} correct={opponentScore?.correctAnswers ?? 0} /></div>
+          <TournamentTimeline currentRound={currentRound} />
+          <div className={`${arenaPanelClass} p-5`}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Tournament live</p><span className="h-2 w-2 animate-pulse rounded-full bg-emerald-300" /></div><div className="mt-4 space-y-3">{feed.length === 0 ? <p className="text-sm text-slate-500">Waiting for bracket activity…</p> : feed.map((item) => <div key={item.id} className="border-l-2 border-cyan-300/40 pl-3"><p className="text-sm font-bold text-slate-200">{item.text}</p>{item.emphasis && <p className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">{item.emphasis}</p>}</div>)}</div></div>
         </aside>
       </div>
     </ArenaShell>
   );
 }
 
+function TournamentTimeline({ currentRound }: { currentRound: number }) {
+  return <div className={`${arenaPanelClass} p-5`}><p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Road to champion</p><div className="mt-4 space-y-1">{FIELD_STEPS.map((count, index) => { const completed = index < currentRound - 1; const active = index === currentRound - 1; return <div key={count} className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm ${active ? "border border-cyan-300/30 bg-cyan-300/10 text-cyan-100" : completed ? "text-emerald-300" : "text-slate-500"}`}><span className="w-5 text-center font-black">{completed ? "✓" : active ? "●" : "·"}</span><span className="flex-1">{count === 1 ? "Champion" : `${count.toLocaleString()} left`}</span>{active && <span className="text-[10px] font-black uppercase tracking-[0.15em]">You</span>}</div>; })}</div></div>;
+}
+
 function ScoreRow({ name, score, correct, highlight = false }: { name: string; score: number; correct: number; highlight?: boolean }) {
-  return (
-    <div className={`mt-4 rounded-2xl border p-4 ${highlight ? "border-cyan-300/30 bg-cyan-300/10" : "border-white/10 bg-white/[0.035]"}`}>
-      <div className="flex items-center justify-between gap-3"><p className="truncate font-black">{name}</p><p className="font-black text-cyan-200">{score.toLocaleString()}</p></div>
-      <p className="mt-1 text-xs text-slate-400">{correct} correct</p>
-    </div>
-  );
+  return <div className={`mt-4 rounded-2xl border p-4 ${highlight ? "border-cyan-300/30 bg-cyan-300/10" : "border-white/10 bg-white/[0.035]"}`}><div className="flex items-center justify-between gap-3"><p className="truncate font-black">{name}</p><p className="font-black text-cyan-200">{score.toLocaleString()}</p></div><p className="mt-1 text-xs text-slate-400">{correct} correct</p></div>;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -451,13 +372,7 @@ function MomentBadge({ text }: { text: string }) {
 }
 
 function MiniPlayer({ name, label }: { name: string; label: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-center">
-      <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-cyan-300/10 font-black text-cyan-100">{name.slice(0, 2).toUpperCase()}</div>
-      <p className="mt-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-1 truncate font-black">{name}</p>
-    </div>
-  );
+  return <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-cyan-300/10 font-black text-cyan-100">{name.slice(0, 2).toUpperCase()}</div><p className="mt-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">{label}</p><p className="mt-1 truncate font-black">{name}</p></div>;
 }
 
 function Loading({ label }: { label: string }) {
