@@ -2,7 +2,7 @@ import type { Server, Socket } from "socket.io";
 import {
   getTournamentCoordinator,
   registerTournamentSocketHandlers as registerGameplayHandlers,
-} from "./tournamentSocketHandlers";
+} from "./secureTournamentSocketHandlers";
 import { registerTournamentSpectatorHandlers } from "./registerTournamentSpectatorHandlers";
 
 export { getTournamentCoordinator };
