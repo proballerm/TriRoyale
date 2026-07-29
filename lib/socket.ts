@@ -65,6 +65,13 @@ export function getSocket(): ReturnType<typeof io> {
     socket.on("tournamentMatchFound", clearBotFallbackTimer);
     socket.on("disconnect", clearBotFallbackTimer);
 
+    socket.on("tournamentSessionReplaced", () => {
+      clearBotFallbackTimer();
+      lastTournamentJoin = null;
+      socket?.io.reconnection(false);
+      socket?.disconnect();
+    });
+
     socket.on("connect_error", (error: Error) => {
       console.warn(
         `[socket] Failed to connect to ${url}/socket.io: ${error.message}. ` +
