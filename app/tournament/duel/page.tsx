@@ -51,6 +51,7 @@ type MatchFound = {
 };
 
 type FeedItem = { id: string; text: string; emphasis?: string };
+type RivalProfile = { title: string; traits: string[]; tendency: string; threat: "Low" | "Medium" | "High" | "Elite" };
 
 const labels = ["A", "B", "C", "D"];
 const RESULT_REVEAL_DELAY_MS = 900;
@@ -58,6 +59,22 @@ const NEXT_DUEL_DELAY_SECONDS = 7;
 const QUESTION_INTRO_TICKS = 3;
 const FIELD_STEPS = [1000, 500, 250, 125, 63, 32, 16, 8, 4, 2, 1];
 const FEED_NAMES = ["Nova", "Marcus", "Avery", "Kai", "Maya", "Jordan", "Riley", "Zane"];
+const ARCHETYPES = [
+  { title: "Speed Hunter", traits: ["Fast responder", "Aggressive"], tendency: "Answers early and trusts instinct." },
+  { title: "Clutch Specialist", traits: ["Late-round threat", "Calm under pressure"], tendency: "Strongest when the duel is close." },
+  { title: "Knowledge Generalist", traits: ["Balanced", "Consistent"], tendency: "Rarely gives away an easy question." },
+  { title: "Risk Taker", traits: ["Unpredictable", "High variance"], tendency: "Can swing a round with one fast answer." },
+  { title: "Methodical Reader", traits: ["Patient", "Accurate"], tendency: "Uses more time but avoids careless misses." },
+  { title: "Momentum Player", traits: ["Streaky", "Confidence driven"], tendency: "Gets more dangerous after scoring first." },
+];
+
+function buildRivalProfile(opponent: TournamentPlayer | null): RivalProfile {
+  if (!opponent) return { title: "Unknown challenger", traits: ["Scanning", "Unranked"], tendency: "Match intelligence is loading.", threat: "Medium" };
+  const seed = [...opponent.displayName].reduce((total, character) => total + character.charCodeAt(0), opponent.wins * 17);
+  const archetype = ARCHETYPES[Math.abs(seed) % ARCHETYPES.length];
+  const threat = opponent.wins >= 6 ? "Elite" : opponent.wins >= 3 ? "High" : opponent.wins >= 1 ? "Medium" : "Low";
+  return { ...archetype, threat };
+}
 
 function TournamentDuelPageInner() {
   const { data: session, status } = useSession();
@@ -91,6 +108,7 @@ function TournamentDuelPageInner() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const questionIdRef = useRef<string | null>(null);
   const previousScoresRef = useRef<Score[]>([]);
+  const rivalProfile = useMemo(() => buildRivalProfile(opponent), [opponent]);
 
   useEffect(() => {
     questionIdRef.current = question?.questionId ?? null;
@@ -113,10 +131,7 @@ function TournamentDuelPageInner() {
         `The field is collapsing toward ${remaining.toLocaleString()}`,
         `${name} eliminated a higher seed`,
       ];
-      setFeed((items) => [
-        { id: crypto.randomUUID(), text: messages[Math.floor(Math.random() * messages.length)], emphasis: "LIVE" },
-        ...items,
-      ].slice(0, 4));
+      setFeed((items) => [{ id: crypto.randomUUID(), text: messages[Math.floor(Math.random() * messages.length)], emphasis: "LIVE" }, ...items].slice(0, 4));
     }, 4200);
     return () => window.clearInterval(timer);
   }, [question, duelResult, player?.round]);
@@ -150,7 +165,11 @@ function TournamentDuelPageInner() {
     const handleReady = (payload: { player: TournamentPlayer; opponent: TournamentPlayer }) => {
       setPlayer(payload.player);
       setOpponent(payload.opponent);
-      setFeed([{ id: crypto.randomUUID(), text: `${payload.opponent.displayName} entered the arena`, emphasis: "RIVAL LOCKED" }]);
+      const profile = buildRivalProfile(payload.opponent);
+      setFeed([
+        { id: crypto.randomUUID(), text: `${payload.opponent.displayName} entered the arena`, emphasis: "RIVAL LOCKED" },
+        { id: crypto.randomUUID(), text: `${profile.title} · ${profile.threat} threat`, emphasis: "SCOUT REPORT" },
+      ]);
     };
 
     const handleQuestion = (payload: DuelQuestion) => {
@@ -193,9 +212,7 @@ function TournamentDuelPageInner() {
     };
 
     const handleAnswerAccepted = (payload: { duelId: string; questionId: string; accepted: boolean }) => {
-      if (payload.duelId === duelId && payload.questionId === questionIdRef.current) {
-        setAnswerLocked((locked) => payload.accepted || locked);
-      }
+      if (payload.duelId === duelId && payload.questionId === questionIdRef.current) setAnswerLocked((locked) => payload.accepted || locked);
     };
 
     const handleQuestionResult = (payload: { duelId: string; correctAnswer: string; explanation?: string; scores: Score[] }) => {
@@ -310,9 +327,7 @@ function TournamentDuelPageInner() {
     const closeFinish = margin <= 250;
     const perfect = (playerScore?.correctAnswers ?? 0) === 3;
 
-    if (!showFinalResult) {
-      return <ArenaShell><section className={`${arenaPanelClass} mx-auto flex min-h-[560px] max-w-3xl flex-col items-center justify-center p-8 text-center sm:p-12`}><div className="h-20 w-20 animate-pulse rounded-full border border-white/10 bg-white/5" /><p className="mt-6 text-xs font-black uppercase tracking-[0.32em] text-slate-400">Final scores locked</p><h1 className="mt-3 text-4xl font-black">Calculating result…</h1></section></ArenaShell>;
-    }
+    if (!showFinalResult) return <ArenaShell><section className={`${arenaPanelClass} mx-auto flex min-h-[560px] max-w-3xl flex-col items-center justify-center p-8 text-center sm:p-12`}><div className="h-20 w-20 animate-pulse rounded-full border border-white/10 bg-white/5" /><p className="mt-6 text-xs font-black uppercase tracking-[0.32em] text-slate-400">Final scores locked</p><h1 className="mt-3 text-4xl font-black">Calculating result…</h1></section></ArenaShell>;
 
     return (
       <ArenaShell>
@@ -337,15 +352,16 @@ function TournamentDuelPageInner() {
   return (
     <ArenaShell>
       {scoreFlash && <div className="pointer-events-none fixed inset-x-0 top-24 z-50 mx-auto w-fit rounded-full border border-cyan-300/30 bg-[#071324]/95 px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-cyan-100 shadow-2xl">{scoreFlash}</div>}
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#081426]/85 px-5 py-4 backdrop-blur-xl"><div><p className="text-xs font-black uppercase tracking-[0.28em] text-cyan-300">Round of {currentField.toLocaleString()}</p><h1 className="mt-1 text-2xl font-black">{displayName} vs {opponent?.displayName || "Rival"}</h1></div><span className={`rounded-full border px-3 py-2 text-sm font-bold ${connected ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200"}`}>{connected ? "Live" : "Reconnecting"}</span></header>
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#081426]/85 px-5 py-4 backdrop-blur-xl"><div><p className="text-xs font-black uppercase tracking-[0.28em] text-cyan-300">Round of {currentField.toLocaleString()}</p><h1 className="mt-1 text-2xl font-black">{displayName} vs {opponent?.displayName || "Rival"}</h1><p className="mt-1 text-sm font-bold text-slate-400">{rivalProfile.title} · {rivalProfile.threat} threat</p></div><span className={`rounded-full border px-3 py-2 text-sm font-bold ${connected ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200"}`}>{connected ? "Live" : "Reconnecting"}</span></header>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <section className={`${arenaPanelClass} relative overflow-hidden p-6 sm:p-8`}>
           {introTick > 0 && question && <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#06101e]/95 text-center backdrop-blur-sm"><p className="text-xs font-black uppercase tracking-[0.34em] text-cyan-300">{isFinal ? "FINAL QUESTION" : `QUESTION ${question.questionNumber}`}</p><h2 className="mt-4 text-5xl font-black">{isFinal ? "2× POINTS" : introTick}</h2><p className="mt-4 text-slate-300">{isFinal ? "One answer can change everything." : momentum}</p></div>}
-          {error ? <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><p className="text-xs font-black uppercase tracking-[0.24em] text-red-300">Duel error</p><h2 className="mt-3 text-3xl font-black">Unable to continue</h2><p className="mt-3 max-w-md text-slate-300">{error}</p><button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">Start a new tournament</button></div> : roundResult ? <div className="flex min-h-[520px] flex-col justify-center text-center"><p className={`text-xs font-black uppercase tracking-[0.28em] ${answeredCorrectly ? "text-emerald-300" : "text-red-300"}`}>{answeredCorrectly ? "CORRECT" : selectedAnswer ? "NOT QUITE" : "TIME EXPIRED"}</p><h2 className="mt-4 text-4xl font-black">{roundResult.correctAnswer}</h2>{roundResult.explanation && <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-slate-300">{roundResult.explanation}</p>}<div className="mx-auto mt-7 flex gap-3"><Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} /><Stat label="Rival score" value={(opponentScore?.score ?? 0).toLocaleString()} /></div><p className="mt-8 font-bold text-cyan-200">{momentum} · Next question incoming…</p></div> : question ? <><div className="flex items-center justify-between gap-4"><span className={`rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.16em] ${isFinal ? "border-amber-300/30 bg-amber-300/10 text-amber-200" : "border-white/10 bg-white/5 text-slate-300"}`}>{isFinal ? "Final question · 2×" : `Question ${question.questionNumber} of ${question.questionCount}`}</span><span className={`text-3xl font-black ${timeLeft <= 4 ? "text-red-300" : "text-cyan-300"}`}>{timeLeft}s</span></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className={`h-full transition-[width] ${timeLeft <= 4 ? "bg-red-400" : isFinal ? "bg-amber-300" : "bg-cyan-400"}`} style={{ width: `${progress}%` }} /></div><div className="mt-5 flex items-center justify-between gap-3 text-sm"><span className="font-bold text-slate-400">{momentum}</span><span className="font-bold text-slate-400">{selectedAnswer ? "Rival is thinking…" : "Both players active"}</span></div><p className="mt-8 text-xs font-black uppercase tracking-[0.24em] text-white/40">{question.category}</p><h2 className="mt-3 text-3xl font-black leading-tight sm:text-4xl">{question.question}</h2><div className="mt-8 grid gap-4 sm:grid-cols-2">{question.answers.map((answer, index) => <button key={answer} onClick={() => submitAnswer(answer)} disabled={introTick > 0 || !!selectedAnswer || timeLeft <= 0} className={`flex min-h-24 items-center gap-4 rounded-2xl border p-5 text-left font-bold transition ${selectedAnswer === answer ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 bg-white/[0.035] hover:border-white/25 hover:bg-white/[0.07] disabled:opacity-60"}`}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-cyan-200">{labels[index]}</span><span>{answer}</span></button>)}</div>{selectedAnswer && <p className="mt-5 text-center text-sm font-bold text-cyan-200">{answerLocked ? "Answer locked — waiting on your rival" : "Locking answer…"}</p>}</> : <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><div className="h-14 w-14 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" /><h2 className="mt-6 text-2xl font-black">Preparing the arena</h2><p className="mt-2 text-slate-400">Loading three unique questions for both competitors.</p></div>}
+          {error ? <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><p className="text-xs font-black uppercase tracking-[0.24em] text-red-300">Duel error</p><h2 className="mt-3 text-3xl font-black">Unable to continue</h2><p className="mt-3 max-w-md text-slate-300">{error}</p><button onClick={() => router.push("/tournament")} className="mt-7 rounded-xl bg-cyan-400 px-6 py-3 font-black text-[#03101f]">Start a new tournament</button></div> : roundResult ? <div className="flex min-h-[520px] flex-col justify-center text-center"><p className={`text-xs font-black uppercase tracking-[0.28em] ${answeredCorrectly ? "text-emerald-300" : "text-red-300"}`}>{answeredCorrectly ? "CORRECT" : selectedAnswer ? "NOT QUITE" : "TIME EXPIRED"}</p><h2 className="mt-4 text-4xl font-black">{roundResult.correctAnswer}</h2>{roundResult.explanation && <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-slate-300">{roundResult.explanation}</p>}<div className="mx-auto mt-7 flex gap-3"><Stat label="Your score" value={(playerScore?.score ?? 0).toLocaleString()} /><Stat label="Rival score" value={(opponentScore?.score ?? 0).toLocaleString()} /></div><p className="mt-8 font-bold text-cyan-200">{momentum} · Next question incoming…</p></div> : question ? <><div className="flex items-center justify-between gap-4"><span className={`rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.16em] ${isFinal ? "border-amber-300/30 bg-amber-300/10 text-amber-200" : "border-white/10 bg-white/5 text-slate-300"}`}>{isFinal ? "Final question · 2×" : `Question ${question.questionNumber} of ${question.questionCount}`}</span><span className={`text-3xl font-black ${timeLeft <= 4 ? "text-red-300" : "text-cyan-300"}`}>{timeLeft}s</span></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className={`h-full transition-[width] ${timeLeft <= 4 ? "bg-red-400" : isFinal ? "bg-amber-300" : "bg-cyan-400"}`} style={{ width: `${progress}%` }} /></div><div className="mt-5 flex items-center justify-between gap-3 text-sm"><span className="font-bold text-slate-400">{momentum}</span><span className="font-bold text-slate-400">{selectedAnswer ? `${opponent?.displayName || "Rival"} is thinking…` : `${rivalProfile.title} active`}</span></div><p className="mt-8 text-xs font-black uppercase tracking-[0.24em] text-white/40">{question.category}</p><h2 className="mt-3 text-3xl font-black leading-tight sm:text-4xl">{question.question}</h2><div className="mt-8 grid gap-4 sm:grid-cols-2">{question.answers.map((answer, index) => <button key={answer} onClick={() => submitAnswer(answer)} disabled={introTick > 0 || !!selectedAnswer || timeLeft <= 0} className={`flex min-h-24 items-center gap-4 rounded-2xl border p-5 text-left font-bold transition ${selectedAnswer === answer ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 bg-white/[0.035] hover:border-white/25 hover:bg-white/[0.07] disabled:opacity-60"}`}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-cyan-200">{labels[index]}</span><span>{answer}</span></button>)}</div>{selectedAnswer && <p className="mt-5 text-center text-sm font-bold text-cyan-200">{answerLocked ? "Answer locked — waiting on your rival" : "Locking answer…"}</p>}</> : <div className="flex min-h-[520px] flex-col items-center justify-center text-center"><div className="h-14 w-14 animate-spin rounded-full border-4 border-white/10 border-t-cyan-300" /><h2 className="mt-6 text-2xl font-black">Preparing the arena</h2><p className="mt-2 text-slate-400">Loading three unique questions for both competitors.</p></div>}
         </section>
 
         <aside className="space-y-4">
+          <RivalCard opponent={opponent} profile={rivalProfile} />
           <div className={`${arenaPanelClass} p-5`}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Live duel</p><span className="text-xs font-black uppercase tracking-[0.16em] text-cyan-300">{momentum}</span></div><ScoreRow name={displayName} score={playerScore?.score ?? 0} correct={playerScore?.correctAnswers ?? 0} highlight /><ScoreRow name={opponent?.displayName || "Opponent"} score={opponentScore?.score ?? 0} correct={opponentScore?.correctAnswers ?? 0} /></div>
           <TournamentTimeline currentRound={currentRound} />
           <div className={`${arenaPanelClass} p-5`}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">Tournament live</p><span className="h-2 w-2 animate-pulse rounded-full bg-emerald-300" /></div><div className="mt-4 space-y-3">{feed.length === 0 ? <p className="text-sm text-slate-500">Waiting for bracket activity…</p> : feed.map((item) => <div key={item.id} className="border-l-2 border-cyan-300/40 pl-3"><p className="text-sm font-bold text-slate-200">{item.text}</p>{item.emphasis && <p className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">{item.emphasis}</p>}</div>)}</div></div>
@@ -353,6 +369,11 @@ function TournamentDuelPageInner() {
       </div>
     </ArenaShell>
   );
+}
+
+function RivalCard({ opponent, profile }: { opponent: TournamentPlayer | null; profile: RivalProfile }) {
+  const threatClass = profile.threat === "Elite" ? "text-red-300" : profile.threat === "High" ? "text-amber-300" : "text-cyan-300";
+  return <div className={`${arenaPanelClass} overflow-hidden p-5`}><div className="flex items-start gap-4"><div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-white/10 bg-cyan-300/10 text-lg font-black text-cyan-100">{(opponent?.displayName || "??").slice(0, 2).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-lg font-black">{opponent?.displayName || "Scanning rival"}</p><span className={`text-[10px] font-black uppercase tracking-[0.16em] ${threatClass}`}>{profile.threat}</span></div><p className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-cyan-300">{profile.title}</p><p className="mt-2 text-sm leading-5 text-slate-400">{profile.tendency}</p></div></div><div className="mt-4 flex flex-wrap gap-2">{profile.traits.map((trait) => <span key={trait} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-300">{trait}</span>)}</div><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl border border-white/10 bg-white/[0.035] p-3"><p className="text-lg font-black">{opponent?.wins ?? 0}</p><p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Duel wins</p></div><div className="rounded-xl border border-white/10 bg-white/[0.035] p-3"><p className="text-lg font-black">{opponent?.kind === "bot" ? "AI" : "LIVE"}</p><p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Competitor</p></div></div></div>;
 }
 
 function TournamentTimeline({ currentRound }: { currentRound: number }) {
