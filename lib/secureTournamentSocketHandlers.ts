@@ -7,9 +7,15 @@ import { verifyTournamentSocketToken } from "./tournamentSocketToken";
 
 const activeTournamentSocketByPlayer = new Map<string, string>();
 const protectedTournamentEvents = new Set([
+  "createTournamentLobby",
   "joinTournament",
   "startTournamentDuel",
   "submitTournamentAnswer",
+]);
+
+const identityPayloadEvents = new Set([
+  "createTournamentLobby",
+  "joinTournament",
 ]);
 
 type VerifiedTournamentIdentity = {
@@ -51,12 +57,12 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
     const identity = getVerifiedIdentity(socket);
     if (!identity) {
       socket.emit("tournamentAuthenticationRequired", {
-        message: "Your tournament login expired. Refreshing the live connection should fix it.",
+        message: "Your tournament login expired. Refresh the page to reconnect.",
       });
       return;
     }
 
-    if (eventName === "joinTournament") {
+    if (identityPayloadEvents.has(eventName)) {
       claimPlayerSession(io, socket, identity.playerId);
       const payload = rawPayload && typeof rawPayload === "object"
         ? rawPayload as Record<string, unknown>
