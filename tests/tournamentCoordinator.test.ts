@@ -1,38 +1,63 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TournamentCoordinator } from "../lib/tournamentCoordinator";
+import { TournamentCoordinator, TournamentJoinResult } from "../lib/tournamentCoordinator";
 
-test("joins a human and immediately backfills with a bot", () => {
+function joinWithBot(
+  coordinator: TournamentCoordinator,
+  playerId: string,
+  displayName: string,
+): Extract<TournamentJoinResult, { status: "matched" }> {
+  const queued = coordinator.join(playerId, displayName);
+  assert.equal(queued.status, "queued");
+  const matched = coordinator.join(playerId, displayName);
+  assert.equal(matched.status, "matched");
+  if (matched.status !== "matched") throw new Error("Expected bot fallback match");
+  return matched;
+}
+
+test("queues a lone human before falling back to a bot", () => {
   const coordinator = new TournamentCoordinator("coordinator-1", 8, () => 0.5);
-  const result = coordinator.join("user-1", "Prabal M.");
+  const queued = coordinator.join("user-1", "Prabal M.");
 
-  assert.equal(result.status, "matched");
-  if (result.status !== "matched") return;
+  assert.equal(queued.status, "queued");
+  assert.equal(coordinator.getSnapshot().queuedHumans, 1);
+  assert.equal(coordinator.getSnapshot().activeDuels, 0);
 
-  assert.equal(result.match.player.id, "user-1");
-  assert.equal(result.match.opponent.kind, "bot");
-  assert.equal(result.match.tournament.startingPlayers, 8);
-  assert.equal(result.match.duel.questionCount, 3);
+  const matched = coordinator.join("user-1", "Prabal M.");
+  assert.equal(matched.status, "matched");
+  if (matched.status !== "matched") return;
+  assert.equal(matched.match.player.id, "user-1");
+  assert.equal(matched.match.opponent.kind, "bot");
+  assert.equal(matched.match.duel.questionCount, 3);
+});
+
+test("matches two humans before either receives a bot", () => {
+  const coordinator = new TournamentCoordinator("coordinator-human-first", 8, () => 0.5);
+  const first = coordinator.join("user-1", "Maya R.");
+  const second = coordinator.join("user-2", "Ryan S.");
+
+  assert.equal(first.status, "queued");
+  assert.equal(second.status, "matched");
+  if (second.status !== "matched") return;
+  assert.equal(second.match.opponent.id, "user-1");
+  assert.equal(second.match.opponent.kind, "human");
+  assert.equal(coordinator.getMatchForPlayer("user-1")?.opponent.id, "user-2");
 });
 
 test("returns the same active duel when a player reconnects", () => {
   const coordinator = new TournamentCoordinator("coordinator-2", 8, () => 0.5);
-  const first = coordinator.join("user-1", "Maya R.");
+  const first = joinWithBot(coordinator, "user-1", "Maya R.");
   const second = coordinator.join("user-1", "Maya R.");
 
-  assert.equal(first.status, "matched");
   assert.equal(second.status, "matched");
-  if (first.status !== "matched" || second.status !== "matched") return;
-
+  if (second.status !== "matched") return;
   assert.equal(second.match.duel.id, first.match.duel.id);
   assert.equal(second.match.opponent.id, first.match.opponent.id);
 });
 
 test("exposes active pairings and recent results to spectators", () => {
   const coordinator = new TournamentCoordinator("coordinator-spectator", 8, () => 0.5);
-  const joined = coordinator.join("user-1", "Ava K.");
-  assert.equal(joined.status, "matched");
-  if (joined.status !== "matched") return;
+  const joined = joinWithBot(coordinator, "user-1", "Ava K.");
 
   const liveFeed = coordinator.getSpectatorState();
   assert.equal(liveFeed.activeDuels.length, 1);
@@ -47,10 +72,7 @@ test("exposes active pairings and recent results to spectators", () => {
 
 test("completes the live duel and simulates every other match in that round", () => {
   const coordinator = new TournamentCoordinator("coordinator-3", 8, () => 0.5);
-  const joined = coordinator.join("user-1", "Ava K.");
-  assert.equal(joined.status, "matched");
-  if (joined.status !== "matched") return;
-
+  const joined = joinWithBot(coordinator, "user-1", "Ava K.");
   const completed = coordinator.completeMatch(joined.match.duel.id, "user-1");
 
   assert.equal(completed.winner.id, "user-1");
@@ -66,10 +88,7 @@ test("completes the live duel and simulates every other match in that round", ()
 
 test("reduces a 1000-player field to 500 after the opening round", () => {
   const coordinator = new TournamentCoordinator("coordinator-1000", 1000, () => 0.25);
-  const joined = coordinator.join("user-1", "Prabal M.");
-  assert.equal(joined.status, "matched");
-  if (joined.status !== "matched") return;
-
+  const joined = joinWithBot(coordinator, "user-1", "Prabal M.");
   const completed = coordinator.completeMatch(joined.match.duel.id, "user-1");
 
   assert.equal(completed.background.duelsCompleted, 499);
@@ -81,19 +100,14 @@ test("reduces a 1000-player field to 500 after the opening round", () => {
 
 test("does not expose completed duels as active matches", () => {
   const coordinator = new TournamentCoordinator("coordinator-4", 4, () => 0.5);
-  const joined = coordinator.join("user-1", "Noah T.");
-  assert.equal(joined.status, "matched");
-  if (joined.status !== "matched") return;
-
+  const joined = joinWithBot(coordinator, "user-1", "Noah T.");
   const opponentId = joined.match.opponent.id;
   coordinator.completeMatch(joined.match.duel.id, "user-1");
-
   assert.equal(coordinator.getMatchForPlayer(opponentId), null);
 });
 
 test("rejects completing an unknown duel", () => {
   const coordinator = new TournamentCoordinator("coordinator-5", 4, () => 0.5);
-
   assert.throws(
     () => coordinator.completeMatch("missing-duel", "user-1"),
     /Duel not found/,
@@ -103,7 +117,6 @@ test("rejects completing an unknown duel", () => {
 test("resets to a fresh 1000-player tournament", () => {
   const coordinator = new TournamentCoordinator("coordinator-6", 4, () => 0.5);
   coordinator.join("user-1", "Leah V.");
-
   const snapshot = coordinator.reset("coordinator-reset");
 
   assert.equal(snapshot.id, "coordinator-reset");
