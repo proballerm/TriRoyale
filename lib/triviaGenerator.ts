@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import "dotenv/config";
+import { getFallbackTriviaQuestion } from "./fallbackTriviaQuestions";
 import { getTriviaCollection } from "./triviaCollection";
 import {
   CorrectLetter,
@@ -197,7 +198,17 @@ export async function generateTriviaQuestion(category: string) {
         ]
       : category;
 
-  const reusable = await getReusableQuestion(actualCategory);
-  const question = reusable || (await generateNewQuestion(actualCategory));
-  return shuffleForPlay(question);
+  try {
+    const reusable = await getReusableQuestion(actualCategory);
+    if (reusable) return shuffleForPlay(reusable);
+  } catch (error) {
+    console.warn(`[Trivia] Stored question lookup failed for ${actualCategory}; using generation fallback`, error);
+  }
+
+  try {
+    return shuffleForPlay(await generateNewQuestion(actualCategory));
+  } catch (error) {
+    console.warn(`[Trivia] AI generation failed for ${actualCategory}; using offline fallback`, error);
+    return shuffleForPlay(getFallbackTriviaQuestion(actualCategory));
+  }
 }
