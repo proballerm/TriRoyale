@@ -1,62 +1,30 @@
 import { randomUUID } from "crypto";
 import type { Server, Socket } from "socket.io";
 import { generateTriviaQuestion } from "./triviaGenerator";
-import { TournamentCoordinator } from "./tournamentCoordinator";
+import {
+  bindDuelToLobby,
+  bindPlayerToLobby,
+  completeTournamentLobby,
+  createTournamentLobby,
+  getLatestTournamentCoordinator,
+  getTournamentLobby,
+  getTournamentLobbyForDuel,
+  getTournamentLobbyForPlayer,
+  type TournamentLobby,
+} from "./tournamentLobbyRegistry";
 import {
   DuelQuestion,
   TOURNAMENT_DUEL_QUESTION_TIME_SECONDS,
   TournamentDuelEngine,
 } from "./tournamentDuelEngine";
-import {
-  archiveCompletedTournament,
-  clearActiveDuelSessions,
-  deleteActiveDuelSession,
-  loadActiveDuelSessions,
-  loadActiveTournament,
-  saveActiveDuelSession,
-  saveActiveTournament,
-} from "./tournamentPersistence";
+import { archiveCompletedTournament } from "./tournamentPersistence";
 
-const coordinator = new TournamentCoordinator();
 const duelSessions = new Map<string, TournamentDuelEngine>();
 const duelTimers = new Map<string, NodeJS.Timeout>();
 const botTimers = new Map<string, NodeJS.Timeout[]>();
 const duelStarting = new Set<string>();
-let persistenceWrite = Promise.resolve();
-
-const persistenceReady = loadActiveTournament()
-  .then(async (state) => {
-    if (!state) return;
-    coordinator.restore(state);
-    const sessions = await loadActiveDuelSessions(state.tournamentId);
-    for (const sessionState of sessions) {
-      const match = coordinator.getMatchForPlayer(sessionState.playerIds[0]);
-      if (match?.duel.id === sessionState.duelId && !sessionState.completed) {
-        duelSessions.set(sessionState.duelId, TournamentDuelEngine.restore(sessionState));
-      }
-    }
-    console.log(`[Tournament] Restored ${state.tournamentId} and ${duelSessions.size} live duel session(s)`);
-  })
-  .catch((error) => console.error("[Tournament] Failed to restore persisted state", error));
-
-function queuePersistence(): Promise<void> {
-  const state = coordinator.exportState();
-  persistenceWrite = persistenceWrite
-    .catch(() => undefined)
-    .then(() => saveActiveTournament(state))
-    .catch((error) => console.error("[Tournament] Failed to persist state", error));
-  return persistenceWrite;
-}
-
-function queueDuelPersistence(engine: TournamentDuelEngine): Promise<void> {
-  const tournamentId = coordinator.getSnapshot().id;
-  const state = engine.exportState();
-  persistenceWrite = persistenceWrite
-    .catch(() => undefined)
-    .then(() => saveActiveDuelSession(tournamentId, state))
-    .catch((error) => console.error("[Tournament] Failed to persist duel session", error));
-  return persistenceWrite;
-}
+const LOBBY_FILL_DURATION_MS = 6_000;
+const LOBBY_FILL_TICK_MS = 250;
 
 function sanitizeIdentity(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
@@ -64,8 +32,13 @@ function sanitizeIdentity(value: unknown, maxLength: number): string | null {
   return sanitized || null;
 }
 
-function playerRoom(playerId: string): string { return `tournament-player:${playerId}`; }
-function duelRoom(duelId: string): string { return `tournament-duel:${duelId}`; }
+function playerRoom(lobbyId: string, playerId: string): string {
+  return `tournament:${lobbyId}:player:${playerId}`;
+}
+
+function duelRoom(duelId: string): string {
+  return `tournament-duel:${duelId}`;
+}
 
 function publicQuestion(question: DuelQuestion, engine: TournamentDuelEngine) {
   return {
@@ -81,24 +54,52 @@ function publicQuestion(question: DuelQuestion, engine: TournamentDuelEngine) {
   };
 }
 
-async function createDuelQuestions(): Promise<DuelQuestion[]> {
+function fingerprintQuestion(question: string): string {
+  return question
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+async function createDuelQuestions(lobby: TournamentLobby): Promise<DuelQuestion[]> {
   const categories = ["Sports", "Science", "Movies", "History", "Geography", "Music"];
+  const availableCategories = [...categories].sort(() => Math.random() - 0.5);
   const questions: DuelQuestion[] = [];
+  const duelFingerprints = new Set<string>();
+
   for (let index = 0; index < 3; index += 1) {
-    const category = categories[Math.floor(Math.random() * categories.length)];
-    const generated = await generateTriviaQuestion(category);
-    const correctIndex = ["A", "B", "C", "D"].indexOf(generated.correct);
-    if (correctIndex < 0 || !generated.answers[correctIndex]) throw new Error("Trivia generator returned an invalid correct answer");
-    questions.push({
-      id: randomUUID(),
-      category,
-      question: generated.question,
-      answers: generated.answers,
-      correctAnswer: generated.answers[correctIndex],
-      explanation: generated.explanation,
-      timeLimit: TOURNAMENT_DUEL_QUESTION_TIME_SECONDS,
-    });
+    let accepted: DuelQuestion | null = null;
+
+    for (let attempt = 0; attempt < 6 && !accepted; attempt += 1) {
+      const category = availableCategories[(index + attempt) % availableCategories.length];
+      const generated = await generateTriviaQuestion(category);
+      const correctIndex = ["A", "B", "C", "D"].indexOf(generated.correct);
+      if (correctIndex < 0 || !generated.answers[correctIndex]) continue;
+
+      const fingerprint = fingerprintQuestion(generated.question);
+      if (!fingerprint) continue;
+      if (duelFingerprints.has(fingerprint)) continue;
+      if (lobby.usedQuestionFingerprints.has(fingerprint)) continue;
+
+      accepted = {
+        id: randomUUID(),
+        category,
+        question: generated.question,
+        answers: generated.answers,
+        correctAnswer: generated.answers[correctIndex],
+        explanation: generated.explanation,
+        timeLimit: TOURNAMENT_DUEL_QUESTION_TIME_SECONDS,
+      };
+      duelFingerprints.add(fingerprint);
+      lobby.usedQuestionFingerprints.add(fingerprint);
+    }
+
+    if (!accepted) {
+      throw new Error("Could not generate a new unique trivia question. Please retry the duel.");
+    }
+    questions.push(accepted);
   }
+
   return questions;
 }
 
@@ -120,72 +121,107 @@ function emitScores(io: Server, engine: TournamentDuelEngine): void {
   });
 }
 
-function scheduleBotAnswer(io: Server, engine: TournamentDuelEngine): void {
+function scheduleBotAnswer(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): void {
   clearBotTimers(engine.duelId);
   const timers: NodeJS.Timeout[] = [];
   const remainingMs = Math.max(0, engine.getQuestionDeadline() - Date.now());
+
   for (const playerId of engine.playerIds) {
-    const player = coordinator.getPlayer(playerId);
+    const player = lobby.coordinator.getPlayer(playerId);
     if (player?.kind !== "bot" || engine.hasAnswered(playerId)) continue;
     const question = engine.getCurrentQuestion();
-    const responseMs = Math.min(remainingMs, 500 + Math.floor(Math.random() * Math.max(1, Math.min(7_000, remainingMs))));
-    const correct = Math.random() < 0.62;
+    const responseMs = Math.min(
+      remainingMs,
+      900 + Math.floor(Math.random() * Math.max(1, Math.min(6_000, remainingMs))),
+    );
+    const accuracy = Math.min(0.82, 0.54 + player.wins * 0.025);
+    const correct = Math.random() < accuracy;
     const wrongAnswers = question.answers.filter((choice) => choice !== question.correctAnswer);
-    const answer = correct ? question.correctAnswer : wrongAnswers[Math.floor(Math.random() * wrongAnswers.length)];
+    const answer = correct
+      ? question.correctAnswer
+      : wrongAnswers[Math.floor(Math.random() * wrongAnswers.length)];
+
     const timer = setTimeout(() => {
       if (engine.isComplete() || engine.hasAnswered(playerId)) return;
       try {
         engine.submitAnswer(playerId, question.id, answer, Date.now());
-        void queueDuelPersistence(engine);
         emitScores(io, engine);
-        if (engine.isQuestionComplete()) void finishQuestion(io, engine);
+        if (engine.isQuestionComplete()) void finishQuestion(io, engine, lobby);
       } catch {
-        // The question may have advanced while this timer was pending.
+        // Question advanced before the bot timer fired.
       }
     }, responseMs);
     timers.push(timer);
   }
+
   botTimers.set(engine.duelId, timers);
 }
 
-function scheduleQuestionDeadline(io: Server, engine: TournamentDuelEngine): void {
+function scheduleQuestionDeadline(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): void {
   clearDuelTimer(engine.duelId);
   const remainingMs = Math.max(0, engine.getQuestionDeadline() - Date.now());
-  duelTimers.set(engine.duelId, setTimeout(() => void finishQuestion(io, engine), remainingMs + 300));
+  duelTimers.set(
+    engine.duelId,
+    setTimeout(() => void finishQuestion(io, engine, lobby), remainingMs + 300),
+  );
 }
 
-function startActiveQuestion(io: Server, engine: TournamentDuelEngine): void {
+function startActiveQuestion(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): void {
   clearDuelTimer(engine.duelId);
   clearBotTimers(engine.duelId);
-  const startedAt = Date.now();
-  const question = engine.startQuestion(startedAt);
-  void queueDuelPersistence(engine);
+  const question = engine.startQuestion(Date.now());
   io.to(duelRoom(engine.duelId)).emit("tournamentQuestion", publicQuestion(question, engine));
-  scheduleBotAnswer(io, engine);
-  scheduleQuestionDeadline(io, engine);
+  scheduleBotAnswer(io, engine, lobby);
+  scheduleQuestionDeadline(io, engine, lobby);
 }
 
-function resumeActiveQuestion(io: Server, engine: TournamentDuelEngine): void {
+function resumeActiveQuestion(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): void {
   if (!engine.getQuestionStartedAt()) {
-    startActiveQuestion(io, engine);
+    startActiveQuestion(io, engine, lobby);
     return;
   }
   if (engine.getQuestionDeadline() <= Date.now()) {
-    void finishQuestion(io, engine);
+    void finishQuestion(io, engine, lobby);
     return;
   }
-  scheduleBotAnswer(io, engine);
-  scheduleQuestionDeadline(io, engine);
+  scheduleBotAnswer(io, engine, lobby);
+  scheduleQuestionDeadline(io, engine, lobby);
 }
 
-async function finishQuestion(io: Server, engine: TournamentDuelEngine): Promise<void> {
+function emitMatchFound(io: Server, lobby: TournamentLobby, match: ReturnType<TournamentLobby["coordinator"]["getMatchForPlayer"]>): void {
+  if (!match) return;
+  const { duel, player, opponent, tournament } = match;
+  bindDuelToLobby(duel.id, lobby.id);
+  io.to(playerRoom(lobby.id, player.id)).emit("tournamentMatchFound", {
+    lobbyId: lobby.id,
+    duel,
+    player,
+    opponent,
+    tournament,
+  });
+  if (opponent.kind === "human") {
+    io.to(playerRoom(lobby.id, opponent.id)).emit("tournamentMatchFound", {
+      lobbyId: lobby.id,
+      duel,
+      player: opponent,
+      opponent: player,
+      tournament,
+    });
+  }
+}
+
+async function finishQuestion(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): Promise<void> {
   clearDuelTimer(engine.duelId);
   clearBotTimers(engine.duelId);
   if (engine.isComplete()) return;
+
   const question = engine.getCurrentQuestion();
   for (const playerId of engine.playerIds) {
-    if (!engine.hasAnswered(playerId)) engine.submitAnswer(playerId, question.id, "__TIMEOUT__", Date.now());
+    if (!engine.hasAnswered(playerId)) {
+      engine.submitAnswer(playerId, question.id, "__TIMEOUT__", Date.now());
+    }
   }
+
   io.to(duelRoom(engine.duelId)).emit("tournamentQuestionResult", {
     duelId: engine.duelId,
     questionId: question.id,
@@ -195,148 +231,203 @@ async function finishQuestion(io: Server, engine: TournamentDuelEngine): Promise
   });
 
   const nextQuestion = engine.advanceQuestion();
-  await queueDuelPersistence(engine);
   if (nextQuestion) {
-    setTimeout(() => startActiveQuestion(io, engine), 2_500);
+    setTimeout(() => startActiveQuestion(io, engine, lobby), 2_500);
     return;
   }
 
-  const tournamentId = coordinator.getSnapshot().id;
   const winnerId = engine.getWinnerId();
-  const result = coordinator.completeMatch(engine.duelId, winnerId);
+  const result = lobby.coordinator.completeMatch(engine.duelId, winnerId);
   const payload = {
+    lobbyId: lobby.id,
     duel: result.duel,
     winner: result.winner,
     loser: result.loser,
     tournament: result.tournament,
     scores: engine.getScores(),
   };
+
   io.to(duelRoom(engine.duelId)).emit("tournamentDuelCompleted", payload);
-  io.to(playerRoom(result.winner.id)).emit("tournamentMatchCompleted", payload);
-  io.to(playerRoom(result.loser.id)).emit("tournamentMatchCompleted", payload);
+  io.to(playerRoom(lobby.id, result.winner.id)).emit("tournamentMatchCompleted", payload);
+  io.to(playerRoom(lobby.id, result.loser.id)).emit("tournamentMatchCompleted", payload);
   duelSessions.delete(engine.duelId);
-  await deleteActiveDuelSession(tournamentId, engine.duelId).catch((error) => {
-    console.error("[Tournament] Failed to delete completed duel session", error);
-  });
 
   if (result.tournament.champion) {
-    const completedState = coordinator.exportState();
-    try {
-      await archiveCompletedTournament(completedState, result.tournament);
-      await clearActiveDuelSessions(tournamentId);
-      coordinator.reset();
-      await queuePersistence();
-      io.emit("tournamentReset", {
-        tournament: coordinator.getSnapshot(),
-        previousChampion: result.tournament.champion,
-      });
-    } catch (error) {
+    completeTournamentLobby(lobby.id);
+    await archiveCompletedTournament(lobby.coordinator.exportState(), result.tournament).catch((error) => {
       console.error("[Tournament] Failed to archive completed tournament", error);
-      await queuePersistence();
-    }
+    });
+    io.to(`tournament:${lobby.id}`).emit("tournamentChampion", {
+      lobbyId: lobby.id,
+      champion: result.tournament.champion,
+      tournament: result.tournament,
+    });
     return;
   }
 
-  await queuePersistence();
-  if (result.nextMatch) {
-    const { duel, player, opponent, tournament } = result.nextMatch;
-    io.to(playerRoom(player.id)).emit("tournamentMatchFound", { duel, player, opponent, tournament });
-    if (opponent.kind === "human") {
-      io.to(playerRoom(opponent.id)).emit("tournamentMatchFound", {
-        duel,
-        player: opponent,
-        opponent: player,
-        tournament,
-      });
-    }
-  }
+  if (result.nextMatch) emitMatchFound(io, lobby, result.nextMatch);
+}
+
+function startLobbyFill(io: Server, lobby: TournamentLobby, playerId: string, displayName: string): void {
+  const startedAt = Date.now();
+  lobby.fillTimer = setInterval(() => {
+    const elapsed = Date.now() - startedAt;
+    const ratio = Math.min(1, elapsed / LOBBY_FILL_DURATION_MS);
+    const eased = 1 - Math.pow(1 - ratio, 2.4);
+    lobby.visiblePlayers = Math.max(1, Math.min(lobby.targetPlayers, Math.floor(1 + eased * 999)));
+
+    io.to(playerRoom(lobby.id, playerId)).emit("tournamentLobbyUpdate", {
+      lobbyId: lobby.id,
+      phase: ratio >= 1 ? "starting" : "waiting",
+      joinedPlayers: lobby.visiblePlayers,
+      targetPlayers: lobby.targetPlayers,
+      estimatedSecondsRemaining: Math.max(0, Math.ceil((LOBBY_FILL_DURATION_MS - elapsed) / 1000)),
+    });
+
+    if (ratio < 1) return;
+    if (lobby.fillTimer) clearInterval(lobby.fillTimer);
+    lobby.fillTimer = null;
+    lobby.phase = "active";
+
+    const result = lobby.coordinator.join(playerId, displayName);
+    io.to(playerRoom(lobby.id, playerId)).emit("tournamentJoined", {
+      lobbyId: lobby.id,
+      player: result.status === "matched" ? result.match.player : result.player,
+      tournament: result.status === "matched" ? result.match.tournament : result.tournament,
+    });
+
+    if (result.status === "matched") emitMatchFound(io, lobby, result.match);
+  }, LOBBY_FILL_TICK_MS);
 }
 
 export function registerTournamentSocketHandlers(io: Server, socket: Socket): void {
-  socket.on("joinTournament", async ({ playerId, displayName }: Record<string, unknown>) => {
-    await persistenceReady;
+  socket.on("createTournamentLobby", ({ playerId, displayName }: Record<string, unknown>) => {
     const safePlayerId = sanitizeIdentity(playerId, 100);
     const safeDisplayName = sanitizeIdentity(displayName, 40);
     if (!safePlayerId || !safeDisplayName) {
-      socket.emit("tournamentError", { message: "A valid player identity and display name are required." });
+      socket.emit("tournamentError", { message: "A valid player identity is required." });
       return;
     }
+
     try {
-      const result = coordinator.join(safePlayerId, safeDisplayName);
+      const lobby = createTournamentLobby(safePlayerId);
+      bindPlayerToLobby(safePlayerId, lobby.id);
       socket.data.tournamentPlayerId = safePlayerId;
-      socket.join(playerRoom(safePlayerId));
-      await queuePersistence();
-      socket.emit("tournamentJoined", {
-        player: result.status === "matched" ? result.match.player : result.player,
-        tournament: result.status === "matched" ? result.match.tournament : result.tournament,
+      socket.data.tournamentLobbyId = lobby.id;
+      socket.join(`tournament:${lobby.id}`);
+      socket.join(playerRoom(lobby.id, safePlayerId));
+
+      const initial = lobby.coordinator.join(safePlayerId, safeDisplayName);
+      socket.emit("tournamentLobbyCreated", {
+        lobbyId: lobby.id,
+        phase: "waiting",
+        joinedPlayers: 1,
+        targetPlayers: lobby.targetPlayers,
+        tournament: initial.status === "matched" ? initial.match.tournament : initial.tournament,
+        player: initial.status === "matched" ? initial.match.player : initial.player,
       });
-      if (result.status === "matched") {
-        const { duel, player, opponent, tournament } = result.match;
-        socket.emit("tournamentMatchFound", { duel, player, opponent, tournament });
-        if (opponent.kind === "human") {
-          io.to(playerRoom(opponent.id)).emit("tournamentMatchFound", {
-            duel,
-            player: opponent,
-            opponent: player,
-            tournament,
-          });
-        }
-      }
+      startLobbyFill(io, lobby, safePlayerId, safeDisplayName);
     } catch (error) {
-      socket.emit("tournamentError", { message: error instanceof Error ? error.message : "Unable to join tournament." });
+      socket.emit("tournamentError", {
+        message: error instanceof Error ? error.message : "Unable to create tournament lobby.",
+      });
     }
   });
 
-  socket.on("getTournamentStatus", async () => {
-    await persistenceReady;
+  socket.on("joinTournament", ({ playerId, displayName, lobbyId }: Record<string, unknown>) => {
+    const safePlayerId = sanitizeIdentity(playerId, 100);
+    const safeDisplayName = sanitizeIdentity(displayName, 40);
+    const safeLobbyId = sanitizeIdentity(lobbyId, 100);
+    if (!safePlayerId || !safeDisplayName || !safeLobbyId) {
+      socket.emit("tournamentError", { message: "Tournament lobby information is missing." });
+      return;
+    }
+
+    const lobby = getTournamentLobby(safeLobbyId);
+    if (!lobby) {
+      socket.emit("tournamentError", { message: "That tournament lobby no longer exists." });
+      return;
+    }
+
+    bindPlayerToLobby(safePlayerId, lobby.id);
+    socket.data.tournamentPlayerId = safePlayerId;
+    socket.data.tournamentLobbyId = lobby.id;
+    socket.join(`tournament:${lobby.id}`);
+    socket.join(playerRoom(lobby.id, safePlayerId));
+    const result = lobby.coordinator.join(safePlayerId, safeDisplayName);
+    socket.emit("tournamentJoined", {
+      lobbyId: lobby.id,
+      player: result.status === "matched" ? result.match.player : result.player,
+      tournament: result.status === "matched" ? result.match.tournament : result.tournament,
+    });
+    if (result.status === "matched") emitMatchFound(io, lobby, result.match);
+  });
+
+  socket.on("getTournamentStatus", () => {
     const playerId = socket.data.tournamentPlayerId as string | undefined;
+    const lobby = playerId ? getTournamentLobbyForPlayer(playerId) : null;
+    if (!lobby || !playerId) {
+      socket.emit("tournamentStatus", { lobbyId: null, tournament: null, player: null, match: null });
+      return;
+    }
     socket.emit("tournamentStatus", {
-      tournament: coordinator.getSnapshot(),
-      player: playerId ? coordinator.getPlayer(playerId) : null,
-      match: playerId ? coordinator.getMatchForPlayer(playerId) : null,
+      lobbyId: lobby.id,
+      tournament: lobby.coordinator.getSnapshot(),
+      player: lobby.coordinator.getPlayer(playerId),
+      match: lobby.coordinator.getMatchForPlayer(playerId),
     });
   });
 
   socket.on("startTournamentDuel", async ({ duelId }: Record<string, unknown>) => {
-    await persistenceReady;
     const safeDuelId = sanitizeIdentity(duelId, 100);
     const playerId = socket.data.tournamentPlayerId as string | undefined;
-    if (!safeDuelId || !playerId) {
+    const lobby = safeDuelId ? getTournamentLobbyForDuel(safeDuelId) : null;
+    if (!safeDuelId || !playerId || !lobby) {
       socket.emit("tournamentError", { message: "Unable to start this duel." });
       return;
     }
-    const match = coordinator.getMatchForPlayer(playerId);
+
+    const match = lobby.coordinator.getMatchForPlayer(playerId);
     if (!match || match.duel.id !== safeDuelId) {
       socket.emit("tournamentError", { message: "This duel is no longer active." });
       return;
     }
+
     socket.join(duelRoom(safeDuelId));
     const existing = duelSessions.get(safeDuelId);
     if (existing) {
-      socket.emit("tournamentDuelReady", { duel: match.duel, player: match.player, opponent: match.opponent });
+      socket.emit("tournamentDuelReady", { lobbyId: lobby.id, duel: match.duel, player: match.player, opponent: match.opponent });
       socket.emit("tournamentDuelState", {
         duelId: safeDuelId,
         question: publicQuestion(existing.getCurrentQuestion(), existing),
         scores: existing.getScores(),
         answered: existing.hasAnswered(playerId),
       });
-      resumeActiveQuestion(io, existing);
+      resumeActiveQuestion(io, existing, lobby);
       return;
     }
+
     if (duelStarting.has(safeDuelId)) return;
     duelStarting.add(safeDuelId);
     try {
-      const questions = await createDuelQuestions();
-      const engine = new TournamentDuelEngine(safeDuelId, [match.duel.playerOneId, match.duel.playerTwoId], questions);
+      const questions = await createDuelQuestions(lobby);
+      const engine = new TournamentDuelEngine(
+        safeDuelId,
+        [match.duel.playerOneId, match.duel.playerTwoId],
+        questions,
+      );
       duelSessions.set(safeDuelId, engine);
       io.to(duelRoom(safeDuelId)).emit("tournamentDuelReady", {
+        lobbyId: lobby.id,
         duel: match.duel,
         player: match.player,
         opponent: match.opponent,
       });
-      startActiveQuestion(io, engine);
+      startActiveQuestion(io, engine, lobby);
     } catch (error) {
-      socket.emit("tournamentError", { message: error instanceof Error ? error.message : "Unable to prepare duel questions." });
+      socket.emit("tournamentError", {
+        message: error instanceof Error ? error.message : "Unable to prepare duel questions.",
+      });
     } finally {
       duelStarting.delete(safeDuelId);
     }
@@ -348,14 +439,15 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
     const safeAnswer = sanitizeIdentity(answer, 100);
     const playerId = socket.data.tournamentPlayerId as string | undefined;
     if (!safeDuelId || !safeQuestionId || !safeAnswer || !playerId) return;
+
     const engine = duelSessions.get(safeDuelId);
     if (!engine) {
       socket.emit("tournamentError", { message: "Duel session not found." });
       return;
     }
+
     try {
       const result = engine.submitAnswer(playerId, safeQuestionId, safeAnswer, Date.now());
-      await queueDuelPersistence(engine);
       socket.emit("tournamentAnswerAccepted", {
         duelId: safeDuelId,
         questionId: safeQuestionId,
@@ -363,11 +455,16 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
         points: result.points,
       });
       emitScores(io, engine);
-      if (engine.isQuestionComplete()) void finishQuestion(io, engine);
+      const lobby = getTournamentLobbyForDuel(safeDuelId);
+      if (lobby && engine.isQuestionComplete()) void finishQuestion(io, engine, lobby);
     } catch (error) {
-      socket.emit("tournamentError", { message: error instanceof Error ? error.message : "Answer could not be submitted." });
+      socket.emit("tournamentError", {
+        message: error instanceof Error ? error.message : "Answer could not be submitted.",
+      });
     }
   });
 }
 
-export function getTournamentCoordinator(): TournamentCoordinator { return coordinator; }
+export function getTournamentCoordinator() {
+  return getLatestTournamentCoordinator();
+}
