@@ -1,4 +1,5 @@
 export const TOURNAMENT_DUEL_QUESTION_TIME_SECONDS = 12;
+export const FINAL_QUESTION_MULTIPLIER = 2;
 
 export type DuelQuestion = {
   id: string;
@@ -21,6 +22,7 @@ export type DuelAnswerResult = {
   accepted: boolean;
   correct: boolean;
   points: number;
+  multiplier: number;
   score: DuelPlayerScore;
 };
 
@@ -30,6 +32,7 @@ export type StoredDuelAnswer = {
   responseMs: number;
   correct: boolean;
   points: number;
+  multiplier?: number;
 };
 
 export type TournamentDuelEngineState = {
@@ -120,7 +123,13 @@ export class TournamentDuelEngine {
     this.answersByQuestion.set(this.questionIndex, answers);
     const existing = answers.get(playerId);
     if (existing) {
-      return { accepted: false, correct: existing.correct, points: existing.points, score: this.getScore(playerId) };
+      return {
+        accepted: false,
+        correct: existing.correct,
+        points: existing.points,
+        multiplier: existing.multiplier ?? this.getQuestionMultiplier(),
+        score: this.getScore(playerId),
+      };
     }
 
     const deadline = this.questionStartedAt + question.timeLimit * 1000;
@@ -128,14 +137,16 @@ export class TournamentDuelEngine {
     const withinDeadline = answeredAt <= deadline + 250;
     const correct = withinDeadline && normalize(answer) === normalize(question.correctAnswer);
     const speedRatio = Math.max(0, 1 - responseMs / (question.timeLimit * 1000));
-    const points = correct ? 1000 + Math.round(speedRatio * 500) : 0;
+    const multiplier = this.getQuestionMultiplier();
+    const basePoints = 1000 + Math.round(speedRatio * 500);
+    const points = correct ? basePoints * multiplier : 0;
 
-    answers.set(playerId, { answer, responseMs, correct, points });
+    answers.set(playerId, { answer, responseMs, correct, points, multiplier });
     const score = this.scores.get(playerId)!;
     score.totalResponseMs += responseMs;
     score.score += points;
     if (correct) score.correctAnswers += 1;
-    return { accepted: true, correct, points, score: structuredClone(score) };
+    return { accepted: true, correct, points, multiplier, score: structuredClone(score) };
   }
 
   hasAnswered(playerId: string): boolean {
@@ -164,6 +175,9 @@ export class TournamentDuelEngine {
   }
 
   getQuestionNumber(): number { return this.questionIndex + 1; }
+  getQuestionMultiplier(): number {
+    return this.questionIndex === this.questions.length - 1 ? FINAL_QUESTION_MULTIPLIER : 1;
+  }
   getQuestionStartedAt(): number { return this.questionStartedAt; }
   getQuestionDeadline(): number {
     if (!this.questionStartedAt) return 0;
@@ -183,10 +197,19 @@ export class TournamentDuelEngine {
     if (one.score !== two.score) return one.score > two.score ? one.playerId : two.playerId;
     if (one.correctAnswers !== two.correctAnswers) return one.correctAnswers > two.correctAnswers ? one.playerId : two.playerId;
     if (one.totalResponseMs !== two.totalResponseMs) return one.totalResponseMs < two.totalResponseMs ? one.playerId : two.playerId;
-    return this.playerIds[0];
+    return stableTieBreak(this.duelId, this.playerIds);
   }
 }
 
 function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function stableTieBreak(duelId: string, playerIds: [string, string]): string {
+  let hash = 2166136261;
+  for (const character of duelId) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return playerIds[Math.abs(hash) % playerIds.length];
 }
