@@ -5,6 +5,11 @@ export const TRIVIA_CATEGORIES = [
   "History",
   "Geography",
   "Music",
+  "Television",
+  "Literature",
+  "Food",
+  "Culture",
+  "Games",
 ] as const;
 
 export type TriviaCategory = (typeof TRIVIA_CATEGORIES)[number];
