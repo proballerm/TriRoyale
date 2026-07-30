@@ -1,10 +1,17 @@
+import { config } from "dotenv";
 import { MongoClient } from "mongodb";
+
+config({ path: [".env.local", ".env"], quiet: true });
 
 const uri = process.env.MONGODB_URI;
 
-if (!uri) throw new Error("MONGODB_URI not defined");
+if (!uri) {
+  throw new Error(
+    "MONGODB_URI not defined. Add it to .env.local or .env in the project root.",
+  );
+}
 
-let client = new MongoClient(uri);
+const client = new MongoClient(uri);
 let clientPromise: Promise<MongoClient>;
 
 if (process.env.NODE_ENV === "development") {
