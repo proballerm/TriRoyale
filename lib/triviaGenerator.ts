@@ -13,16 +13,16 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const LETTERS: CorrectLetter[] = ["A", "B", "C", "D"];
 const QUESTION_COOLDOWN_DAYS = 14;
-const MAX_GENERATION_ATTEMPTS = 8;
-const BANK_CANDIDATE_LIMIT = 40;
+const MAX_GENERATION_ATTEMPTS = 10;
+const BANK_CANDIDATE_LIMIT = 50;
 
 const CATEGORY_TOPICS: Record<string, string[]> = {
   Sports: [
-    "American football",
-    "basketball",
-    "baseball",
-    "soccer",
-    "tennis",
+    "American football strategy and rules",
+    "basketball tactics and history",
+    "baseball rules and records",
+    "soccer tactics and international competition",
+    "tennis history and terminology",
     "Olympic sports",
     "combat sports",
     "motorsports",
@@ -91,7 +91,7 @@ const CATEGORY_TOPICS: Record<string, string[]> = {
     "population and culture",
     "national parks",
     "physical geography",
-    "world records that are geographically stable",
+    "geographic superlatives that are time-stable",
   ],
   Music: [
     "pop music",
@@ -165,24 +165,13 @@ const CATEGORY_TOPICS: Record<string, string[]> = {
   ],
 };
 
-const BATTLE_ROYALE_CATEGORIES = [
-  "Sports",
-  "Science",
-  "Movies",
-  "History",
-  "Geography",
-  "Music",
-  "Television",
-  "Literature",
-  "Food",
-  "Culture",
-  "Games",
-] as const;
+const BATTLE_ROYALE_CATEGORIES = Object.keys(CATEGORY_TOPICS);
 
 export type TriviaGenerationOptions = {
   excludedFingerprints?: Iterable<string>;
   excludedTopics?: Iterable<string>;
   preferredTopic?: string;
+  difficultyTarget?: "medium" | "hard";
 };
 
 function normalizeSet(values?: Iterable<string>): Set<string> {
@@ -207,6 +196,7 @@ function shuffleForPlay(question: TriviaQuestion) {
   );
 
   return {
+    category: question.category,
     question: question.question,
     answers: shuffled,
     correct: LETTERS[newCorrectIndex],
@@ -234,7 +224,7 @@ function normalizeStoredQuestion(doc: Record<string, any>, category: string): Tr
       question: doc.question,
       answers: doc.answers,
       correct,
-      difficulty: doc.difficulty || "medium",
+      difficulty: doc.difficulty || "hard",
       explanation:
         doc.explanation ||
         `The correct answer is ${doc.answers[LETTERS.indexOf(correct.toUpperCase() as CorrectLetter)]}.`,
@@ -262,12 +252,14 @@ async function getReusableQuestion(
   const collection = await getTriviaCollection();
   const excludedFingerprints = normalizeSet(options.excludedFingerprints);
   const excludedTopics = normalizeSet(options.excludedTopics);
+  const requestedDifficulty = options.difficultyTarget ?? "hard";
   const cooldownCutoff = new Date(
     Date.now() - QUESTION_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
   );
 
   const query: Record<string, unknown> = {
     category,
+    difficulty: requestedDifficulty,
     $or: [
       { lastUsedAt: { $exists: false } },
       { lastUsedAt: { $lt: cooldownCutoff } },
@@ -322,6 +314,7 @@ async function getReusableQuestion(
 function buildPrompt(
   category: string,
   topic: string,
+  difficultyTarget: "medium" | "hard",
   rejectedReasons: string[],
   excludedFingerprints: Set<string>,
 ): string {
@@ -329,39 +322,49 @@ function buildPrompt(
     ? `\nPrevious attempt was rejected because: ${rejectedReasons.join("; ")}. Fix those issues.`
     : "";
   const avoidContext = excludedFingerprints.size
-    ? `\nDo not repeat or closely paraphrase these already-used question ideas:\n${[...excludedFingerprints].slice(-20).map((value) => `- ${value}`).join("\n")}`
+    ? `\nDo not repeat or closely paraphrase these already-used question ideas:\n${[...excludedFingerprints]
+        .slice(-30)
+        .map((value) => `- ${value}`)
+        .join("\n")}`
     : "";
 
-  return `Create one polished multiple-choice trivia question for a fast multiplayer elimination game.
+  return `Create one competitive multiple-choice trivia question for a fast multiplayer elimination game.
 
 Broad category: ${category}
-Specific topic for this question: ${topic}
-Target player: a general audience, roughly ages 16-40
-Difficulty: medium by default, with occasional easy or hard questions
+Specific topic: ${topic}
+Required difficulty: ${difficultyTarget}
+Target player: an informed general-audience adult
+
+Difficulty rules:
+- This must be genuinely ${difficultyTarget}. Do not produce an elementary fact that most people know instantly.
+- Reward specific knowledge, careful recall, or understanding of context rather than pure guessing.
+- Avoid beginner-level definitions, obvious capitals, mascot questions, basic release-year questions, and universally famous facts.
+- A strong player should need to think, but the answer must not depend on an obscure technicality.
+- Do not make the question hard merely through confusing wording.
+- All four choices must be plausible to someone who knows the category only moderately well.
+- The distractors must be close peers of the correct answer in era, geography, function, genre, or concept.
+- The correct answer must not be identifiable by length, specificity, grammar, or tone.
 
 Variety rules:
-- Stay within the specific topic above rather than defaulting to the most famous fact in the broad category.
-- Prefer a fresh angle: people, places, objects, terminology, discoveries, events, techniques, characters, or cultural context.
-- Avoid repeatedly asking about capitals, release years, championship winners, or the single most famous person in a field.
-- The question must feel meaningfully different from common trivia-template questions.
+- Stay within the assigned topic instead of defaulting to its most famous fact.
+- Prefer a fresh angle involving mechanisms, terminology, chronology, relationships, creators, causes, consequences, techniques, or lesser-known context.
+- Avoid repeatedly asking about capitals, release years, championship winners, and the single most famous person in a field.
+- The question must be meaningfully different from common trivia-template questions.
 
-Quality rules:
-- Ask about a specific, verifiable, time-stable fact with exactly one defensible answer.
-- Make the wording lively and natural, but do not use jokes that make the fact unclear.
-- Avoid school-exam language such as "Which of the following".
-- Avoid trick questions, disputed facts, temporary rankings, current officeholders, exact live statistics, and facts likely to change.
-- Avoid questions where multiple choices could reasonably be accepted.
-- Distractors must be believable and the same type of thing as the correct answer.
-- Do not make the correct answer noticeably longer or more detailed than the distractors.
+Accuracy and fairness rules:
+- Ask about one specific, verifiable, time-stable fact with exactly one defensible answer.
+- Avoid disputed facts, temporary rankings, current officeholders, live statistics, and facts likely to change.
+- Avoid trick questions, negative phrasing, and "all/none of the above."
+- Avoid school-exam wording such as "Which of the following."
 - Keep the question under 150 characters and each answer under 45 characters.
-- Include a one-sentence explanation that confirms why the answer is correct.
+- Include a concise explanation that proves why the answer is correct.
 
 Return only valid JSON in this exact shape:
 {
   "question": "... ?",
   "answers": ["...", "...", "...", "..."],
   "correct": "A",
-  "difficulty": "easy | medium | hard",
+  "difficulty": "${difficultyTarget}",
   "explanation": "..."
 }${avoidContext}${retryContext}`;
 }
@@ -372,23 +375,24 @@ async function generateNewQuestion(
 ): Promise<TriviaQuestion> {
   const collection = await getTriviaCollection();
   const excludedFingerprints = normalizeSet(options.excludedFingerprints);
+  const difficultyTarget = options.difficultyTarget ?? "hard";
   let rejectedReasons: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
     const topic = selectTopic(category, options);
     const completion = await openai.chat.completions.create({
       model: process.env.TRIVIA_MODEL || "gpt-4o-mini",
-      temperature: 0.95,
+      temperature: 0.78,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "You design fair, concise, varied trivia for a real-time multiplayer game. Accuracy, topic diversity, and one unambiguous answer matter more than cleverness.",
+            "You create difficult but fair competitive trivia. Every answer must be factually reliable, every distractor plausible, and every question clearly distinguishable from common trivia-bank material.",
         },
         {
           role: "user",
-          content: buildPrompt(category, topic, rejectedReasons, excludedFingerprints),
+          content: buildPrompt(category, topic, difficultyTarget, rejectedReasons, excludedFingerprints),
         },
       ],
     });
@@ -410,6 +414,11 @@ async function generateNewQuestion(
     }
 
     const question = validation.question;
+    if (question.difficulty !== difficultyTarget) {
+      rejectedReasons = [`Difficulty must be exactly ${difficultyTarget}`];
+      continue;
+    }
+
     const fingerprint = questionFingerprint(question.question);
     if (excludedFingerprints.has(fingerprint)) {
       rejectedReasons = ["Question repeats an idea already used in this game"];
@@ -446,7 +455,7 @@ async function generateNewQuestion(
   }
 
   throw new Error(
-    `Failed to generate a valid ${category} trivia question after ${MAX_GENERATION_ATTEMPTS} attempts`,
+    `Failed to generate a valid ${difficultyTarget} ${category} trivia question after ${MAX_GENERATION_ATTEMPTS} attempts`,
   );
 }
 
