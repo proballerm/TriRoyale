@@ -50,6 +50,7 @@ function publicQuestion(question: DuelQuestion, engine: TournamentDuelEngine) {
     timeLimit: question.timeLimit,
     questionNumber: engine.getQuestionNumber(),
     questionCount: engine.questions.length,
+    multiplier: engine.getQuestionMultiplier(),
     startTime: engine.getQuestionStartedAt() || Date.now(),
   };
 }
@@ -121,6 +122,16 @@ function emitScores(io: Server, engine: TournamentDuelEngine): void {
   });
 }
 
+function emitAnswerStatus(io: Server, engine: TournamentDuelEngine, playerId: string): void {
+  const question = engine.getCurrentQuestion();
+  io.to(duelRoom(engine.duelId)).emit("tournamentPlayerAnswered", {
+    duelId: engine.duelId,
+    questionId: question.id,
+    playerId,
+    answeredPlayers: engine.playerIds.filter((id) => engine.hasAnswered(id)),
+  });
+}
+
 function scheduleBotAnswer(io: Server, engine: TournamentDuelEngine, lobby: TournamentLobby): void {
   clearBotTimers(engine.duelId);
   const timers: NodeJS.Timeout[] = [];
@@ -144,7 +155,9 @@ function scheduleBotAnswer(io: Server, engine: TournamentDuelEngine, lobby: Tour
     const timer = setTimeout(() => {
       if (engine.isComplete() || engine.hasAnswered(playerId)) return;
       try {
-        engine.submitAnswer(playerId, question.id, answer, Date.now());
+        const result = engine.submitAnswer(playerId, question.id, answer, Date.now());
+        if (!result.accepted) return;
+        emitAnswerStatus(io, engine, playerId);
         emitScores(io, engine);
         if (engine.isQuestionComplete()) void finishQuestion(io, engine, lobby);
       } catch {
@@ -396,12 +409,14 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
     socket.join(duelRoom(safeDuelId));
     const existing = duelSessions.get(safeDuelId);
     if (existing) {
+      const opponentId = existing.playerIds.find((id) => id !== playerId);
       socket.emit("tournamentDuelReady", { lobbyId: lobby.id, duel: match.duel, player: match.player, opponent: match.opponent });
       socket.emit("tournamentDuelState", {
         duelId: safeDuelId,
         question: publicQuestion(existing.getCurrentQuestion(), existing),
         scores: existing.getScores(),
         answered: existing.hasAnswered(playerId),
+        opponentAnswered: opponentId ? existing.hasAnswered(opponentId) : false,
       });
       resumeActiveQuestion(io, existing, lobby);
       return;
@@ -453,7 +468,9 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
         questionId: safeQuestionId,
         accepted: result.accepted,
         points: result.points,
+        multiplier: result.multiplier,
       });
+      if (result.accepted) emitAnswerStatus(io, engine, playerId);
       emitScores(io, engine);
       const lobby = getTournamentLobbyForDuel(safeDuelId);
       if (lobby && engine.isQuestionComplete()) void finishQuestion(io, engine, lobby);
