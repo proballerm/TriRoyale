@@ -12,7 +12,9 @@
     "test": "tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "verify": "npm run test && npm run typecheck && npm run build",
-    "lint": "next lint"
+    "lint": "next lint",
+    "trivia:build-bank": "tsx scripts/buildTriviaBank.ts",
+    "trivia:seed": "tsx scripts/buildTriviaBank.ts --count 100"
   },
   "engines": {
     "node": ">=20 <23"
