@@ -1,6 +1,10 @@
 import { randomUUID } from "crypto";
 import type { Server, Socket } from "socket.io";
-import { generateTriviaQuestion } from "./triviaGenerator";
+import {
+  correctAnswerText,
+  getRankedTournamentQuestion,
+  tournamentQuestionDifficulty,
+} from "./triviaDifficulty";
 import {
   bindDuelToLobby,
   bindPlayerToLobby,
@@ -55,50 +59,43 @@ function publicQuestion(question: DuelQuestion, engine: TournamentDuelEngine) {
   };
 }
 
-function fingerprintQuestion(question: string): string {
-  return question
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-async function createDuelQuestions(lobby: TournamentLobby): Promise<DuelQuestion[]> {
-  const categories = ["Sports", "Science", "Movies", "History", "Geography", "Music"];
-  const availableCategories = [...categories].sort(() => Math.random() - 0.5);
+async function createDuelQuestions(
+  lobby: TournamentLobby,
+  tournamentRound: number,
+): Promise<DuelQuestion[]> {
   const questions: DuelQuestion[] = [];
   const duelFingerprints = new Set<string>();
+  const duelCategories = new Set<string>();
 
   for (let index = 0; index < 3; index += 1) {
-    let accepted: DuelQuestion | null = null;
+    const targetRank = tournamentQuestionDifficulty(tournamentRound, index);
+    const generated = await getRankedTournamentQuestion({
+      targetRank,
+      excludedFingerprints: [
+        ...lobby.usedQuestionFingerprints,
+        ...duelFingerprints,
+      ],
+      excludedCategories: duelCategories,
+    });
 
-    for (let attempt = 0; attempt < 6 && !accepted; attempt += 1) {
-      const category = availableCategories[(index + attempt) % availableCategories.length];
-      const generated = await generateTriviaQuestion(category);
-      const correctIndex = ["A", "B", "C", "D"].indexOf(generated.correct);
-      if (correctIndex < 0 || !generated.answers[correctIndex]) continue;
-
-      const fingerprint = fingerprintQuestion(generated.question);
-      if (!fingerprint) continue;
-      if (duelFingerprints.has(fingerprint)) continue;
-      if (lobby.usedQuestionFingerprints.has(fingerprint)) continue;
-
-      accepted = {
-        id: randomUUID(),
-        category,
-        question: generated.question,
-        answers: generated.answers,
-        correctAnswer: generated.answers[correctIndex],
-        explanation: generated.explanation,
-        timeLimit: TOURNAMENT_DUEL_QUESTION_TIME_SECONDS,
-      };
-      duelFingerprints.add(fingerprint);
-      lobby.usedQuestionFingerprints.add(fingerprint);
+    if (!generated) {
+      throw new Error(
+        `The approved question bank does not have an unused difficulty-${targetRank} question. Build more ranked questions before starting this round.`,
+      );
     }
 
-    if (!accepted) {
-      throw new Error("Could not generate a new unique trivia question. Please retry the duel.");
-    }
-    questions.push(accepted);
+    questions.push({
+      id: randomUUID(),
+      category: generated.category,
+      question: generated.question,
+      answers: generated.answers,
+      correctAnswer: correctAnswerText(generated),
+      explanation: generated.explanation,
+      timeLimit: TOURNAMENT_DUEL_QUESTION_TIME_SECONDS,
+    });
+    duelFingerprints.add(generated.fingerprint);
+    duelCategories.add(generated.category);
+    lobby.usedQuestionFingerprints.add(generated.fingerprint);
   }
 
   return questions;
@@ -145,7 +142,11 @@ function scheduleBotAnswer(io: Server, engine: TournamentDuelEngine, lobby: Tour
       remainingMs,
       900 + Math.floor(Math.random() * Math.max(1, Math.min(6_000, remainingMs))),
     );
-    const accuracy = Math.min(0.82, 0.54 + player.wins * 0.025);
+    const difficultyPenalty = Math.min(0.18, Math.max(0, player.round - 1) * 0.018);
+    const accuracy = Math.max(
+      0.42,
+      Math.min(0.80, 0.58 + player.wins * 0.02 - difficultyPenalty),
+    );
     const correct = Math.random() < accuracy;
     const wrongAnswers = question.answers.filter((choice) => choice !== question.correctAnswer);
     const answer = correct
@@ -425,7 +426,7 @@ export function registerTournamentSocketHandlers(io: Server, socket: Socket): vo
     if (duelStarting.has(safeDuelId)) return;
     duelStarting.add(safeDuelId);
     try {
-      const questions = await createDuelQuestions(lobby);
+      const questions = await createDuelQuestions(lobby, match.duel.round);
       const engine = new TournamentDuelEngine(
         safeDuelId,
         [match.duel.playerOneId, match.duel.playerTwoId],
